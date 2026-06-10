@@ -61,7 +61,13 @@ Copy-Item -Recurse E:\WORK\nextchatgui $env:USERPROFILE\.hermes\plugins\nextchat
 
 ## 会话工作目录
 
-默认每个新对话会创建一个独立目录。Linux/1Panel/Docker 环境默认：
+默认每个新对话会创建一个独立目录。Linux/1Panel/Docker 环境会优先使用已挂载的 `/opt/data`：
+
+```text
+/opt/data/nextchatgui-workspaces/<timestamp-title-random>/
+```
+
+如果容器内没有 `/opt/data`，才会回退到：
 
 ```text
 /data/nextchatgui-workspaces/<timestamp-title-random>/
@@ -76,7 +82,7 @@ Windows 本地预览默认：
 可以通过环境变量改根目录：
 
 ```bash
-HERMES_NEXTCHATGUI_WORKSPACE_ROOT=/data/nextchatgui-workspaces
+HERMES_NEXTCHATGUI_WORKSPACE_ROOT=/opt/data/nextchatgui-workspaces
 ```
 
 在 1Panel Docker 里建议把这个目录放到已挂载的数据卷内。注意这里必须是容器内路径，不是 Windows 的 `E:\...`。

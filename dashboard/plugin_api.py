@@ -19,7 +19,10 @@ ENV_ROOT_KEYS = (
     "HERMES_NEXTCHAT_WORKSPACE_ROOT",
     "HERMES_WORKSPACES_ROOT",
 )
-CONTAINER_DEFAULT_WORKSPACE_ROOT = Path("/data/nextchatgui-workspaces")
+CONTAINER_DEFAULT_WORKSPACE_ROOTS = (
+    Path("/opt/data/nextchatgui-workspaces"),
+    Path("/data/nextchatgui-workspaces"),
+)
 
 WORKSPACE_CONTEXT_FILE = ".hermes.md"
 WORKSPACE_CONTEXT = """# NextChatGUI Workspace Notes
@@ -54,7 +57,10 @@ def _workspace_root() -> Path:
         if raw:
             return Path(raw).expanduser().resolve(strict=False)
     if os.name != "nt":
-        return CONTAINER_DEFAULT_WORKSPACE_ROOT.resolve(strict=False)
+        for root in CONTAINER_DEFAULT_WORKSPACE_ROOTS:
+            if root.parent.exists():
+                return root.resolve(strict=False)
+        return CONTAINER_DEFAULT_WORKSPACE_ROOTS[0].resolve(strict=False)
     return (_hermes_home() / "workspaces" / "nextchatgui").resolve(strict=False)
 
 
