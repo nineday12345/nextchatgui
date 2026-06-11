@@ -718,6 +718,54 @@
   width: 96px;
 }
 
+.ncg-permission-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--ncg-border-subtle);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--midground-base, #ffffff) 4%, transparent);
+  color: var(--ncg-text-soft);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.ncg-permission-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--ncg-text-muted);
+}
+
+.ncg-permission-ask .ncg-permission-dot {
+  background: var(--ncg-amber);
+}
+
+.ncg-permission-smart {
+  border-color: color-mix(in srgb, var(--ncg-accent) 34%, var(--ncg-border));
+  background: var(--ncg-accent-soft);
+}
+
+.ncg-permission-smart .ncg-permission-dot {
+  background: var(--ncg-accent);
+}
+
+.ncg-permission-danger,
+.ncg-permission-deny {
+  border-color: var(--ncg-red-border);
+  background: var(--ncg-red-soft);
+  color: color-mix(in srgb, var(--ncg-red) 72%, var(--ncg-text) 28%);
+}
+
+.ncg-permission-danger .ncg-permission-dot,
+.ncg-permission-deny .ncg-permission-dot {
+  background: var(--ncg-red);
+}
+
 .ncg-model-select-wrap select:focus,
 .ncg-reasoning-select-wrap select:focus {
   border-color: var(--ncg-focus);
@@ -1182,6 +1230,10 @@
 
   .ncg-composer-actions {
     justify-content: flex-end;
+  }
+
+  .ncg-permission-badge {
+    min-height: 30px;
   }
 
   .ncg-prompt {

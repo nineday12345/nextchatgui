@@ -93,6 +93,13 @@ def _truthy(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _normalize_approval_mode(value: Any, default: str = "manual") -> str:
+    if isinstance(value, bool):
+        return "off" if value is False else default
+    mode = str(value or "").strip().lower()
+    return mode or default
+
+
 def _context_file_enabled() -> bool:
     raw = os.environ.get("HERMES_NEXTCHATGUI_CONTEXT_FILE", "1")
     return str(raw).strip().lower() not in {"0", "false", "no", "off"}
@@ -253,6 +260,23 @@ async def workspace_config() -> dict:
         "root": _portable_path(root),
         "exists": root.exists(),
         "env_keys": ENV_ROOT_KEYS,
+    }
+
+
+@router.get("/permissions")
+async def permissions() -> dict[str, Any]:
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+    except Exception:
+        cfg = {}
+    approvals = cfg.get("approvals") if isinstance(cfg, dict) else {}
+    if not isinstance(approvals, dict):
+        approvals = {}
+    return {
+        "mode": _normalize_approval_mode(approvals.get("mode", "manual")),
+        "cron_mode": _normalize_approval_mode(approvals.get("cron_mode", "deny"), "deny"),
     }
 
 

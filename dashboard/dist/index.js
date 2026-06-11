@@ -88,6 +88,54 @@
     return parts[parts.length - 1] || value;
   }
 
+  function normalizeApprovalMode(value) {
+    if (typeof value === "boolean") return value ? "manual" : "off";
+    const mode = String(value || "").trim().toLowerCase();
+    if (!mode) return "manual";
+    if (mode === "off" || mode === "yolo" || mode === "allow" || mode === "approve") return "off";
+    if (mode === "ask" || mode === "manual") return "manual";
+    if (mode === "smart") return "smart";
+    if (mode === "deny" || mode === "block") return "deny";
+    return mode;
+  }
+
+  function approvalDisplay(info, configMode) {
+    const mode = normalizeApprovalMode(configMode);
+    if (info && info.yolo) {
+      return {
+        label: "Yolo",
+        tone: "danger",
+        title: "Hermes approval bypass is active for this session or globally."
+      };
+    }
+    if (mode === "off") {
+      return {
+        label: "Yolo",
+        tone: "danger",
+        title: "Hermes approvals.mode is off."
+      };
+    }
+    if (mode === "smart") {
+      return {
+        label: "Smart",
+        tone: "smart",
+        title: "Hermes smart approval is enabled."
+      };
+    }
+    if (mode === "deny") {
+      return {
+        label: "Deny",
+        tone: "deny",
+        title: "Hermes approval mode is set to deny/block."
+      };
+    }
+    return {
+      label: "Ask",
+      tone: "ask",
+      title: "Hermes will ask before guarded actions."
+    };
+  }
+
   function flattenModelOptions(payload) {
     const rows = [];
     (payload.providers || []).forEach(function (provider) {
@@ -721,6 +769,33 @@
     );
   }
 
+  function PermissionBadge(props) {
+    const [mode, setMode] = useState("manual");
+
+    useEffect(function () {
+      if (!props.connected) return;
+      let cancelled = false;
+      SDK.fetchJSON(PLUGIN_API + "/permissions")
+        .then(function (result) {
+          if (cancelled) return;
+          setMode(normalizeApprovalMode((result && result.mode) || "manual"));
+        })
+        .catch(function () {
+          if (!cancelled) setMode("manual");
+        });
+      return function () { cancelled = true; };
+    }, [props.connected, props.sessionId]);
+
+    const display = approvalDisplay(props.info || {}, mode);
+    return h("span", {
+      className: cx("ncg-permission-badge", "ncg-permission-" + display.tone),
+      title: display.title
+    },
+      h("span", { className: "ncg-permission-dot", "aria-hidden": true }),
+      display.label
+    );
+  }
+
   function Composer(props) {
     const [draft, setDraft] = useState("");
     const textareaRef = useRef(null);
@@ -777,6 +852,12 @@
             onError: props.onError
           }),
           h("div", { className: "ncg-composer-actions" },
+            h(PermissionBadge, {
+              gw: props.gw,
+              connected: props.connected,
+              sessionId: props.sessionId,
+              info: props.info || {}
+            }),
             props.running ? h("button", {
               type: "button",
               className: "ncg-stop-btn",

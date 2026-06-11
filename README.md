@@ -8,6 +8,7 @@
 - 通过 Hermes 自带 `/api/ws` JSON-RPC 与 `tui_gateway` 通信。
 - 支持新建会话、搜索/恢复历史会话、流式输出、停止当前回合。
 - 输入栏内支持切换当前模型和推理强度。
+- 输入栏右下角显示 Hermes 当前审批状态：Ask、Smart、Yolo 或 Deny。
 - 新会话会自动创建独立工作目录，并把该目录作为 Hermes session 的 `cwd`。
 - Conversation 右上角提供文件抽屉，可查看当前会话工作目录、复制路径、下载文件、删除文件。
 - 支持常见阻塞提示：clarify、approval、sudo、secret。
