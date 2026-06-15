@@ -679,6 +679,88 @@
   font-size: 11px;
 }
 
+.ncg-upload-input {
+  display: none;
+}
+
+.ncg-upload-btn {
+  display: grid;
+  place-items: center;
+  min-width: 38px;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--ncg-border-subtle);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--midground-base, #ffffff) 4%, transparent);
+  color: var(--ncg-text-soft);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.ncg-upload-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--ncg-accent) 45%, var(--ncg-border));
+  background: var(--ncg-accent-soft);
+  color: var(--ncg-text);
+}
+
+.ncg-upload-btn:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.ncg-upload-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 8px;
+}
+
+.ncg-upload-chip {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: min(260px, 100%);
+  height: 26px;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--ncg-border-subtle);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--midground-base, #ffffff) 4%, transparent);
+  color: var(--ncg-text-soft);
+  font-size: 11px;
+}
+
+.ncg-upload-chip-icon {
+  flex: 0 0 auto;
+  color: var(--ncg-text-muted);
+  font-size: 9px;
+  font-weight: 900;
+}
+
+.ncg-upload-chip-name {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ncg-upload-chip-image {
+  border-color: color-mix(in srgb, var(--ncg-accent) 28%, var(--ncg-border));
+}
+
+.ncg-upload-chip-pdf {
+  border-color: color-mix(in srgb, var(--ncg-amber) 34%, var(--ncg-border));
+}
+
+.ncg-upload-chip-loading {
+  color: var(--ncg-text-muted);
+}
+
+.ncg-composer-actions {
+  flex-wrap: wrap;
+}
+
 .ncg-model-controls {
   display: flex;
   align-items: center;

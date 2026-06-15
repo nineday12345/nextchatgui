@@ -796,8 +796,44 @@
     );
   }
 
+  function isImageFile(file) {
+    return !!(file && String(file.type || "").toLowerCase().startsWith("image/"));
+  }
+
+  function isPdfFile(file) {
+    const type = String((file && file.type) || "").toLowerCase();
+    const name = String((file && file.name) || "").toLowerCase();
+    return type === "application/pdf" || name.endsWith(".pdf");
+  }
+
+  function readFileAsDataUrl(file) {
+    return new Promise(function (resolve, reject) {
+      const reader = new FileReader();
+      reader.onload = function () { resolve(String(reader.result || "")); };
+      reader.onerror = function () { reject(reader.error || new Error("Could not read file")); };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function uploadKindLabel(item) {
+    if (item && item.kind === "image") return "IMG";
+    if (item && item.kind === "pdf") return "PDF";
+    return "FILE";
+  }
+
+  function uploadReferenceText(item) {
+    if (item && item.ref_text) return item.ref_text;
+    if (item && item.text) return item.text;
+    const kind = item && item.kind === "image" ? "Image" : item && item.kind === "pdf" ? "PDF" : "File";
+    return kind + ": " + ((item && item.path) || (item && item.name) || "uploaded file");
+  }
+
   function Composer(props) {
     const [draft, setDraft] = useState("");
+    const [uploads, setUploads] = useState([]);
+    const [uploading, setUploading] = useState(false);
+    const imageInputRef = useRef(null);
+    const fileInputRef = useRef(null);
     const textareaRef = useRef(null);
 
     useEffect(function () {
@@ -809,10 +845,113 @@
 
     const send = function () {
       const text = draft.trim();
-      if (!text || props.disabled) return;
+      if (!text || props.disabled || props.running) return;
       setDraft("");
       props.onSend(text);
     };
+
+    async function uploadWorkspaceFiles(cwd, files) {
+      if (!files.length) return [];
+      const form = new FormData();
+      form.append("cwd", cwd);
+      files.forEach(function (file) {
+        form.append("files", file, file.name);
+      });
+
+      const response = await authedFetch(PLUGIN_API + "/files/upload", {
+        method: "POST",
+        body: form
+      });
+      if (!response.ok) {
+        throw new Error(response.status + ": " + await responseMessage(response));
+      }
+      const payload = await response.json();
+      return payload && Array.isArray(payload.items) ? payload.items : [];
+    }
+
+    async function attachImageFile(sessionId, file) {
+      const dataUrl = await readFileAsDataUrl(file);
+      const result = await props.gw.request("image.attach_bytes", {
+        session_id: sessionId,
+        data: dataUrl,
+        filename: file.name
+      }, 120000);
+      return {
+        name: file.name,
+        path: (result && result.path) || file.name,
+        full_path: result && result.path,
+        size: file.size,
+        kind: "image",
+        text: (result && result.text) || ("[User attached image: " + file.name + "]")
+      };
+    }
+
+    async function attachPdfFile(sessionId, file) {
+      const dataUrl = await readFileAsDataUrl(file);
+      const result = await props.gw.request("pdf.attach", {
+        session_id: sessionId,
+        data: dataUrl,
+        filename: file.name
+      }, 180000);
+      return {
+        name: file.name,
+        path: (result && result.path) || file.name,
+        full_path: result && result.path,
+        size: file.size,
+        kind: "pdf",
+        text: (result && result.text) || ("[User attached PDF: " + file.name + "]")
+      };
+    }
+
+    async function uploadSelectedFiles(fileList) {
+      const selected = Array.prototype.slice.call(fileList || []);
+      if (!selected.length || uploading || props.disabled || props.running) return;
+      setUploading(true);
+      try {
+        let cwd = props.info && props.info.cwd;
+        let activeSessionId = props.sessionId;
+        if ((!cwd || !activeSessionId) && props.onEnsureWorkspace) {
+          const ensured = await props.onEnsureWorkspace();
+          cwd = cwd || (ensured && ensured.cwd);
+          activeSessionId = activeSessionId || (ensured && ensured.sessionId);
+        }
+        if (!cwd || !activeSessionId) {
+          throw new Error("Create or resume a conversation before uploading files.");
+        }
+
+        const workspaceFiles = [];
+        const attachedItems = [];
+        for (let i = 0; i < selected.length; i += 1) {
+          const file = selected[i];
+          if (isImageFile(file)) {
+            attachedItems.push(await attachImageFile(activeSessionId, file));
+          } else if (isPdfFile(file)) {
+            attachedItems.push(await attachPdfFile(activeSessionId, file));
+          } else {
+            workspaceFiles.push(file);
+          }
+        }
+
+        const workspaceItems = await uploadWorkspaceFiles(cwd, workspaceFiles);
+        const items = attachedItems.concat(workspaceItems);
+        if (items.length) {
+          setUploads(function (prev) {
+            return prev.concat(items).slice(-8);
+          });
+          const refs = items.map(uploadReferenceText).join("\n");
+          setDraft(function (prev) {
+            const prefix = prev.trim() ? prev.replace(/\s*$/, "") + "\n\n" : "";
+            return prefix + refs;
+          });
+          if (workspaceItems.length && props.onFilesChanged) props.onFilesChanged();
+          setTimeout(function () { textareaRef.current && textareaRef.current.focus(); }, 0);
+        }
+      } catch (err) {
+        if (props.onError) props.onError(parseApiError(err));
+      } finally {
+        setUploading(false);
+      }
+    }
 
     useEffect(function () {
       if (props.prefill) {
@@ -840,6 +979,19 @@
             }
           }
         }),
+        uploads.length || uploading ? h("div", { className: "ncg-upload-strip" },
+          uploads.map(function (item) {
+            return h("span", {
+              key: item.path || item.name,
+              className: cx("ncg-upload-chip", item.kind === "image" && "ncg-upload-chip-image", item.kind === "pdf" && "ncg-upload-chip-pdf"),
+              title: (item.full_path || item.path || item.name) + (item.size ? " - " + formatBytes(item.size) : "")
+            },
+              h("span", { className: "ncg-upload-chip-icon", "aria-hidden": true }, uploadKindLabel(item)),
+              h("span", { className: "ncg-upload-chip-name" }, item.name || item.path)
+            );
+          }),
+          uploading ? h("span", { className: "ncg-upload-chip ncg-upload-chip-loading" }, "Uploading...") : null
+        ) : null,
         h("div", { className: "ncg-composer-footer" },
           h(ModelControls, {
             gw: props.gw,
@@ -852,6 +1004,43 @@
             onError: props.onError
           }),
           h("div", { className: "ncg-composer-actions" },
+            h("input", {
+              ref: imageInputRef,
+              className: "ncg-upload-input",
+              type: "file",
+              accept: "image/*",
+              multiple: true,
+              onChange: function (e) {
+                uploadSelectedFiles(e.target.files);
+                e.target.value = "";
+              }
+            }),
+            h("input", {
+              ref: fileInputRef,
+              className: "ncg-upload-input",
+              type: "file",
+              multiple: true,
+              onChange: function (e) {
+                uploadSelectedFiles(e.target.files);
+                e.target.value = "";
+              }
+            }),
+            h("button", {
+              type: "button",
+              className: "ncg-upload-btn",
+              title: "Upload image",
+              "aria-label": "Upload image",
+              disabled: props.disabled || props.running || uploading,
+              onClick: function () { imageInputRef.current && imageInputRef.current.click(); }
+            }, "Img"),
+            h("button", {
+              type: "button",
+              className: "ncg-upload-btn",
+              title: "Upload file",
+              "aria-label": "Upload file",
+              disabled: props.disabled || props.running || uploading,
+              onClick: function () { fileInputRef.current && fileInputRef.current.click(); }
+            }, "File"),
             h(PermissionBadge, {
               gw: props.gw,
               connected: props.connected,
@@ -866,7 +1055,7 @@
             h("button", {
               type: "submit",
               className: "ncg-send-btn",
-              disabled: props.disabled || !draft.trim()
+              disabled: props.disabled || props.running || !draft.trim()
             }, "↑")
           )
         )
@@ -974,7 +1163,7 @@
 
     useEffect(function () {
       if (props.open) loadFiles();
-    }, [props.open, loadFiles]);
+    }, [props.open, props.version, loadFiles]);
 
     async function downloadItem(item) {
       setNotice("");
@@ -1133,7 +1322,9 @@
     const [prefill, setPrefill] = useState("");
     const [prompt, setPrompt] = useState(null);
     const [filesOpen, setFilesOpen] = useState(false);
+    const [filesVersion, setFilesVersion] = useState(0);
     const sessionIdRef = useRef(null);
+    const infoRef = useRef({});
 
     const connected = connectionState === "open";
     const connecting = connectionState === "connecting";
@@ -1166,6 +1357,10 @@
     useEffect(function () {
       sessionIdRef.current = sessionId;
     }, [sessionId]);
+
+    useEffect(function () {
+      infoRef.current = info || {};
+    }, [info]);
 
     useEffect(function () {
       let cancelled = false;
@@ -1359,12 +1554,25 @@
       sessionIdRef.current = created.session_id;
       setSessionId(created.session_id);
       setSessionKey(created.session_key || created.stored_session_id || created.session_id);
-      setInfo(Object.assign({}, created.info || {}, {
+      const nextInfo = Object.assign({}, created.info || {}, {
         workspaceRoot: workspace.root || "",
         workspaceName: workspace.name || ""
-      }));
+      });
+      infoRef.current = nextInfo;
+      setInfo(nextInfo);
       setMessages(normalizeGatewayMessages(created.messages || []));
       return created.session_id;
+    }
+
+    async function ensureWorkspaceForUpload() {
+      const sid = await ensureSession("Uploaded files");
+      const currentInfo = infoRef.current || {};
+      setStatus("ready");
+      return {
+        sessionId: sid,
+        cwd: currentInfo.cwd || "",
+        info: currentInfo
+      };
     }
 
     async function sendSlash(text, sid) {
@@ -1429,6 +1637,7 @@
       setSessionKey(null);
       setMessages([]);
       setTools([]);
+      infoRef.current = {};
       setInfo({});
       setPrompt(null);
       setStatus("ready");
@@ -1446,7 +1655,8 @@
         sessionIdRef.current = resumed.session_id;
         setSessionId(resumed.session_id);
         setSessionKey(resumed.session_key || resumed.resumed || storedId);
-        setInfo(resumed.info || {});
+        infoRef.current = resumed.info || {};
+        setInfo(infoRef.current);
         setRunning(!!resumed.running);
         setMessages(normalizeGatewayMessages(resumed.messages || []));
         if (resumed.inflight) {
@@ -1599,8 +1809,16 @@
           prefill: prefill,
           onSend: sendMessage,
           onInterrupt: interrupt,
+          onEnsureWorkspace: ensureWorkspaceForUpload,
+          onFilesChanged: function () {
+            setFilesVersion(function (version) { return version + 1; });
+          },
           onInfo: function (patch) {
-            setInfo(function (prev) { return Object.assign({}, prev, patch || {}); });
+            setInfo(function (prev) {
+              const next = Object.assign({}, prev, patch || {});
+              infoRef.current = next;
+              return next;
+            });
           },
           onError: function (message) {
             setError(message || "");
@@ -1610,6 +1828,7 @@
       filesOpen ? h(FileDrawer, {
         open: filesOpen,
         cwd: info.cwd,
+        version: filesVersion,
         onClose: function () { setFilesOpen(false); }
       }) : null,
       h(ToolPanel, {

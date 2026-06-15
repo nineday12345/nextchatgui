@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import mimetypes
 import os
 import re
 import secrets
@@ -8,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -210,6 +211,44 @@ def _file_item(path: Path, workspace: Path) -> dict[str, Any]:
     }
 
 
+def _safe_upload_name(value: str | None) -> str:
+    name = Path(str(value or "").replace("\\", "/")).name
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", name).strip(" .")
+    if not name:
+        return f"upload-{secrets.token_hex(3)}"
+
+    if len(name) <= 180:
+        return name
+
+    parsed = Path(name)
+    suffix = parsed.suffix[:32]
+    stem = (parsed.stem or "upload")[: 180 - len(suffix) - 1]
+    return f"{stem}{suffix}" if suffix else stem[:180]
+
+
+def _unique_upload_path(directory: Path, filename: str) -> Path:
+    candidate = directory / filename
+    if not candidate.exists() and not candidate.is_symlink():
+        return candidate
+
+    parsed = Path(filename)
+    suffix = parsed.suffix
+    stem = parsed.stem or "upload"
+    for index in range(1, 1000):
+        candidate = directory / f"{stem}-{index}{suffix}"
+        if not candidate.exists() and not candidate.is_symlink():
+            return candidate
+    raise HTTPException(status_code=500, detail="Could not allocate a unique upload filename")
+
+
+def _upload_item(path: Path, workspace: Path, content_type: str | None) -> dict[str, Any]:
+    mime = content_type or mimetypes.guess_type(path.name)[0] or ""
+    item = _file_item(path, workspace)
+    item["mime"] = mime
+    item["kind"] = "image" if mime.startswith("image/") else "file"
+    return item
+
+
 def _path_sort_key(path: Path) -> tuple[int, str]:
     try:
         is_dir = path.is_dir() and not path.is_symlink()
@@ -327,6 +366,83 @@ async def file_tree(
         "count": counter["count"],
         "truncated": counter["truncated"],
         "max_entries": max_entries,
+    }
+
+
+@router.post("/files/upload")
+async def upload_files(
+    cwd: str = Form(...),
+    path: str = Form(default=""),
+    files: list[UploadFile] = File(...),
+) -> dict[str, Any]:
+    workspace = _resolve_workspace(cwd)
+    target_dir = _resolve_inside(workspace, path, follow_final_symlink=False)
+
+    if target_dir.exists() or target_dir.is_symlink():
+        resolved_dir = target_dir.resolve(strict=False)
+        _ensure_inside(resolved_dir, workspace)
+        if not resolved_dir.is_dir():
+            raise HTTPException(status_code=400, detail="Upload target is not a directory")
+        target_dir = resolved_dir
+    else:
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail="Permission denied creating upload folder") from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    max_files = max(1, int(os.environ.get("HERMES_NEXTCHATGUI_MAX_UPLOAD_FILES", "20")))
+    max_bytes = max(1, int(os.environ.get("HERMES_NEXTCHATGUI_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024))))
+    incoming = [file for file in files if file is not None]
+    if not incoming:
+        raise HTTPException(status_code=400, detail="No files were uploaded")
+    if len(incoming) > max_files:
+        raise HTTPException(status_code=413, detail=f"Upload limit is {max_files} files")
+
+    items: list[dict[str, Any]] = []
+    for upload in incoming:
+        filename = _safe_upload_name(upload.filename)
+        target = _unique_upload_path(target_dir, filename)
+        written = 0
+        try:
+            with target.open("wb") as handle:
+                while True:
+                    chunk = await upload.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise HTTPException(status_code=413, detail=f"{filename} exceeds the {max_bytes} byte upload limit")
+                    handle.write(chunk)
+        except HTTPException:
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        except PermissionError as exc:
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise HTTPException(status_code=403, detail=f"Permission denied writing {filename}") from exc
+        except OSError as exc:
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        finally:
+            await upload.close()
+
+        items.append(_upload_item(target, workspace, upload.content_type))
+
+    return {
+        "ok": True,
+        "cwd": _portable_path(workspace),
+        "target": _relative_path(target_dir, workspace) if target_dir != workspace else "",
+        "items": items,
     }
 
 
