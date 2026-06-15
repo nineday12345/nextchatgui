@@ -875,21 +875,41 @@
       return payload && Array.isArray(payload.items) ? payload.items : [];
     }
 
-    async function attachImageFile(sessionId, file) {
-      const dataUrl = await readFileAsDataUrl(file);
-      const result = await props.gw.request("image.attach_bytes", {
+    async function attachImagePath(sessionId, item, file) {
+      const result = await props.gw.request("image.attach", {
         session_id: sessionId,
-        content_base64: dataUrl,
-        filename: file.name
+        path: (item && (item.full_path || item.path)) || file.name
       }, 120000);
       return {
         name: file.name,
-        path: (result && result.path) || file.name,
+        path: (result && result.path) || (item && item.path) || file.name,
         full_path: result && result.path,
         size: file.size,
         kind: "image",
         text: (result && result.text) || ("[User attached image: " + file.name + "]")
       };
+    }
+
+    async function attachImageFile(sessionId, file, item) {
+      const dataUrl = await readFileAsDataUrl(file);
+      try {
+        const result = await props.gw.request("image.attach_bytes", {
+          session_id: sessionId,
+          content_base64: dataUrl,
+          filename: file.name
+        }, 120000);
+        return {
+          name: file.name,
+          path: (result && result.path) || file.name,
+          full_path: result && result.path,
+          size: file.size,
+          kind: "image",
+          text: (result && result.text) || ("[User attached image: " + file.name + "]")
+        };
+      } catch (err) {
+        if (!isUnknownGatewayMethod(err)) throw err;
+        return attachImagePath(sessionId, item, file);
+      }
     }
 
     async function attachPdfFile(sessionId, file) {
@@ -930,7 +950,7 @@
           const file = selected[i];
           try {
             const nativeItem = isImageFile(file)
-              ? await attachImageFile(activeSessionId, file)
+              ? await attachImageFile(activeSessionId, file, items[i])
               : isPdfFile(file)
                 ? await attachPdfFile(activeSessionId, file)
                 : null;
