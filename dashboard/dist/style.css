@@ -1180,6 +1180,67 @@
   padding: 10px 8px 12px;
 }
 
+.ncg-browser-drawer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 58;
+  display: flex;
+  flex-direction: column;
+  width: min(920px, calc(100vw - 24px));
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--ncg-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ncg-bg-elevated) 94%, var(--ncg-bg-workspace) 6%);
+  box-shadow: -18px 0 40px rgba(0, 0, 0, 0.38);
+}
+
+.ncg-browser-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--ncg-border-subtle);
+}
+
+.ncg-browser-toolbar .ncg-plain-btn {
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.ncg-browser-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--ncg-text-muted);
+  font-size: 12px;
+}
+
+.ncg-browser-status-on {
+  color: var(--ncg-accent);
+  font-weight: 800;
+}
+
+.ncg-browser-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border: 0;
+  background: #111111;
+}
+
+.ncg-browser-empty {
+  display: grid;
+  flex: 1;
+  place-items: center;
+  padding: 20px;
+  color: var(--ncg-text-muted);
+  font-size: 13px;
+}
+
 .ncg-file-tree {
   display: flex;
   flex-direction: column;

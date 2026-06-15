@@ -20,6 +20,15 @@ ENV_ROOT_KEYS = (
     "HERMES_NEXTCHAT_WORKSPACE_ROOT",
     "HERMES_WORKSPACES_ROOT",
 )
+ENV_BROWSER_NOVNC_KEYS = (
+    "HERMES_NEXTCHATGUI_BROWSER_NOVNC_URL",
+    "NEXTCHATGUI_BROWSER_NOVNC_URL",
+)
+ENV_BROWSER_CDP_KEYS = (
+    "HERMES_NEXTCHATGUI_BROWSER_CDP_URL",
+    "NEXTCHATGUI_BROWSER_CDP_URL",
+    "BROWSER_CDP_URL",
+)
 CONTAINER_DEFAULT_WORKSPACE_ROOTS = (
     Path("/opt/data/nextchatgui-workspaces"),
     Path("/data/nextchatgui-workspaces"),
@@ -92,6 +101,14 @@ def _unique_workspace_path(root: Path, title: str | None) -> Path:
 
 def _truthy(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _first_env(keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _normalize_approval_mode(value: Any, default: str = "manual") -> str:
@@ -333,6 +350,19 @@ async def permissions() -> dict[str, Any]:
     return {
         "mode": _normalize_approval_mode(approvals.get("mode", "manual")),
         "cron_mode": _normalize_approval_mode(approvals.get("cron_mode", "deny"), "deny"),
+    }
+
+
+@router.get("/browser/config")
+async def browser_config() -> dict[str, Any]:
+    novnc_url = _first_env(ENV_BROWSER_NOVNC_KEYS)
+    cdp_url = _first_env(ENV_BROWSER_CDP_KEYS)
+    return {
+        "novnc_url": novnc_url,
+        "cdp_url": cdp_url,
+        "configured": bool(novnc_url or cdp_url),
+        "novnc_env_keys": ENV_BROWSER_NOVNC_KEYS,
+        "cdp_env_keys": ENV_BROWSER_CDP_KEYS,
     }
 
 

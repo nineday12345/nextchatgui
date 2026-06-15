@@ -1361,6 +1361,131 @@
     );
   }
 
+  function BrowserDrawer(props) {
+    const [config, setConfig] = useState(null);
+    const [status, setStatus] = useState(null);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState("");
+    const frameRef = useRef(null);
+
+    const loadConfig = useCallback(function () {
+      setLoading(true);
+      setError("");
+      SDK.fetchJSON(PLUGIN_API + "/browser/config")
+        .then(function (data) {
+          setConfig(data || {});
+          return props.gw && props.connected
+            ? props.gw.request("browser.manage", { action: "status" }, 30000)
+            : null;
+        })
+        .then(function (result) {
+          if (result) setStatus(result);
+        })
+        .catch(function (err) {
+          setError(parseApiError(err));
+        })
+        .finally(function () {
+          setLoading(false);
+        });
+    }, [props.gw, props.connected]);
+
+    useEffect(function () {
+      if (props.open) loadConfig();
+    }, [props.open, loadConfig]);
+
+    function connectBrowser() {
+      if (!props.gw || !props.connected) return;
+      const cdpUrl = config && config.cdp_url;
+      setLoading(true);
+      setError("");
+      props.gw.request("browser.manage", {
+        action: "connect",
+        url: cdpUrl || "",
+        session_id: props.sessionId || ""
+      }, 120000)
+        .then(function (result) {
+          setStatus(result || {});
+        })
+        .catch(function (err) {
+          setError(parseApiError(err));
+        })
+        .finally(function () {
+          setLoading(false);
+        });
+    }
+
+    function disconnectBrowser() {
+      if (!props.gw || !props.connected) return;
+      setLoading(true);
+      setError("");
+      props.gw.request("browser.manage", { action: "disconnect" }, 30000)
+        .then(function (result) {
+          setStatus(result || { connected: false });
+        })
+        .catch(function (err) {
+          setError(parseApiError(err));
+        })
+        .finally(function () {
+          setLoading(false);
+        });
+    }
+
+    function reloadFrame() {
+      if (frameRef.current && frameRef.current.contentWindow) {
+        try {
+          frameRef.current.contentWindow.location.reload();
+          return;
+        } catch (_e) {
+          /* fall through */
+        }
+      }
+      loadConfig();
+    }
+
+    const novncUrl = config && config.novnc_url;
+    const browserConnected = !!(status && status.connected);
+
+    return h("aside", { className: "ncg-browser-drawer", "aria-label": "Browser" },
+      h("div", { className: "ncg-file-head" },
+        h("div", null,
+          h("div", { className: "ncg-eyebrow" }, "Browser"),
+          h("h2", null, browserConnected ? "Connected browser" : "Remote browser")
+        ),
+        h("div", { className: "ncg-file-head-actions" },
+          h(IconButton, { title: "Refresh browser", onClick: reloadFrame, disabled: loading }, "R"),
+          h(IconButton, { title: "Close browser", onClick: props.onClose }, "x")
+        )
+      ),
+      h("div", { className: "ncg-browser-toolbar" },
+        h("span", { className: cx("ncg-browser-status", browserConnected && "ncg-browser-status-on") },
+          browserConnected ? "CDP connected" : "CDP idle"
+        ),
+        h("button", {
+          type: "button",
+          className: "ncg-plain-btn",
+          disabled: loading || !props.connected || !(config && config.cdp_url),
+          onClick: connectBrowser
+        }, "Connect"),
+        h("button", {
+          type: "button",
+          className: "ncg-plain-btn",
+          disabled: loading || !props.connected,
+          onClick: disconnectBrowser
+        }, "Disconnect")
+      ),
+      error ? h("div", { className: "ncg-file-error" }, error) : null,
+      !novncUrl
+        ? h("div", { className: "ncg-browser-empty" }, loading ? "Loading..." : "No browser view configured.")
+        : h("iframe", {
+          ref: frameRef,
+          className: "ncg-browser-frame",
+          src: novncUrl,
+          title: "Remote browser",
+          allow: "clipboard-read; clipboard-write; fullscreen"
+        })
+    );
+  }
+
   function ToolPanel(props) {
     const tools = props.tools || [];
     const [expandedTools, setExpandedTools] = useState({});
@@ -1448,6 +1573,7 @@
     const [prefill, setPrefill] = useState("");
     const [prompt, setPrompt] = useState(null);
     const [filesOpen, setFilesOpen] = useState(false);
+    const [browserOpen, setBrowserOpen] = useState(false);
     const [filesVersion, setFilesVersion] = useState(0);
     const sessionIdRef = useRef(null);
     const infoRef = useRef({});
@@ -1901,6 +2027,13 @@
                 setFilesOpen(function (open) { return !open; });
               }
             }, "▣"),
+            h(IconButton, {
+              className: cx("ncg-file-toggle", browserOpen && "ncg-file-toggle-active"),
+              title: browserOpen ? "Close browser" : "Open browser",
+              onClick: function () {
+                setBrowserOpen(function (open) { return !open; });
+              }
+            }, "B"),
             h("span", { className: "ncg-status-pill" },
               h(StatusDot, { tone: connected ? "green" : connecting ? "amber" : "red", label: connectionState }),
               stateLabel
@@ -1956,6 +2089,13 @@
         cwd: info.cwd,
         version: filesVersion,
         onClose: function () { setFilesOpen(false); }
+      }) : null,
+      browserOpen ? h(BrowserDrawer, {
+        open: browserOpen,
+        gw: gw,
+        connected: connected,
+        sessionId: sessionId,
+        onClose: function () { setBrowserOpen(false); }
       }) : null,
       h(ToolPanel, {
         tools: tools,
