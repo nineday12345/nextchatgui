@@ -771,8 +771,9 @@
 
   function PermissionBadge(props) {
     const [mode, setMode] = useState("manual");
+    const [applying, setApplying] = useState(false);
 
-    useEffect(function () {
+    const refreshMode = useCallback(function () {
       if (!props.connected) return;
       let cancelled = false;
       SDK.fetchJSON(PLUGIN_API + "/permissions")
@@ -786,13 +787,49 @@
       return function () { cancelled = true; };
     }, [props.connected, props.sessionId]);
 
+    useEffect(function () {
+      return refreshMode();
+    }, [props.connected, props.sessionId]);
+
     const display = approvalDisplay(props.info || {}, mode);
-    return h("span", {
+    const activeYolo = display.label === "Yolo";
+
+    async function toggleYolo(e) {
+      if (!props.gw || !props.sessionId || !props.connected || applying) return;
+      setApplying(true);
+      try {
+        const scope = e && e.shiftKey ? "global" : "session";
+        const result = await props.gw.request("config.set", {
+          key: "yolo",
+          value: activeYolo ? "off" : "on",
+          scope: scope,
+          session_id: props.sessionId
+        }, 30000);
+        const enabled = result && String(result.value || "") === "1";
+        if (result && result.scope === "global") {
+          setMode(enabled ? "off" : "manual");
+        }
+        if (props.onInfo) {
+          props.onInfo({ yolo: enabled || (result && result.scope === "global" && enabled) });
+        }
+        refreshMode();
+      } catch (err) {
+        if (props.onError) props.onError(parseApiError(err));
+      } finally {
+        setApplying(false);
+      }
+    }
+
+    return h("button", {
+      type: "button",
       className: cx("ncg-permission-badge", "ncg-permission-" + display.tone),
-      title: display.title
+      disabled: !props.connected || !props.gw || !props.sessionId || applying,
+      title: (display.title || "") + " Click to toggle session Yolo. Shift-click toggles global approvals.",
+      "aria-pressed": activeYolo,
+      onClick: toggleYolo
     },
       h("span", { className: "ncg-permission-dot", "aria-hidden": true }),
-      display.label
+      applying ? "..." : display.label
     );
   }
 
@@ -1152,7 +1189,9 @@
               gw: props.gw,
               connected: props.connected,
               sessionId: props.sessionId,
-              info: props.info || {}
+              info: props.info || {},
+              onInfo: props.onInfo,
+              onError: props.onError
             }),
             props.running ? h("button", {
               type: "button",

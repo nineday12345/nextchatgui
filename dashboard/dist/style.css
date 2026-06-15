@@ -879,6 +879,7 @@
 }
 
 .ncg-permission-badge {
+  appearance: none;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -892,6 +893,17 @@
   font-weight: 700;
   line-height: 1;
   white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ncg-permission-badge:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+.ncg-permission-badge:not(:disabled):hover {
+  border-color: color-mix(in srgb, var(--ncg-text-muted) 50%, var(--ncg-border));
 }
 
 .ncg-permission-dot {
