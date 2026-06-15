@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from .browser_tools import (
+    AUTOCOMPLETE_SCHEMA,
     DOWNLOADS_SCHEMA,
+    EVIDENCE_SCHEMA,
     EXTRACT_TABLES_SCHEMA,
     FILL_FORM_SCHEMA,
     NETWORK_SCHEMA,
@@ -13,8 +15,10 @@ from .browser_tools import (
     _check_browser_tools_available,
     handle_capture_network,
     handle_downloads,
+    handle_evidence,
     handle_extract_tables,
     handle_fill_form,
+    handle_select_autocomplete,
     handle_tabs,
     handle_wait_for_selector,
     handle_wait_for_text,
@@ -29,6 +33,8 @@ _TOOLS = (
     ("next_browser_downloads", DOWNLOADS_SCHEMA, handle_downloads),
     ("next_browser_capture_network", NETWORK_SCHEMA, handle_capture_network),
     ("next_browser_fill_form", FILL_FORM_SCHEMA, handle_fill_form),
+    ("next_browser_select_autocomplete", AUTOCOMPLETE_SCHEMA, handle_select_autocomplete),
+    ("next_browser_evidence", EVIDENCE_SCHEMA, handle_evidence),
 )
 
 
