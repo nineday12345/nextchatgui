@@ -17,6 +17,7 @@
   const ANY = "*";
   const REQUEST_TIMEOUT_MS = 120000;
   const PLUGIN_API = "/api/plugins/nextchatgui";
+  const ACTIVE_SESSION_STORAGE_KEY = "nextchatgui.activeSession.v1";
 
   function cx() {
     return Array.prototype.slice.call(arguments).filter(Boolean).join(" ");
@@ -66,6 +67,49 @@
     }
     const text = render(value).trim();
     return text || fallback || "";
+  }
+
+  function readActiveSession() {
+    try {
+      if (!window.localStorage) return null;
+      const raw = window.localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      const sessionId = displayText(parsed.sessionId || parsed.session_id);
+      const sessionKey = displayText(parsed.sessionKey || parsed.session_key || parsed.storedSessionId);
+      if (!sessionId && !sessionKey) return null;
+      return {
+        sessionId: sessionId,
+        sessionKey: sessionKey,
+        savedAt: Number(parsed.savedAt || 0)
+      };
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  function writeActiveSession(sessionId, sessionKey) {
+    const liveId = displayText(sessionId);
+    const stableKey = displayText(sessionKey);
+    if (!liveId && !stableKey) return;
+    try {
+      if (!window.localStorage) return;
+      window.localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, JSON.stringify({
+        sessionId: liveId,
+        sessionKey: stableKey,
+        savedAt: Date.now()
+      }));
+    } catch (_e) {
+      /* localStorage can be blocked; the chat still works without persistence. */
+    }
+  }
+
+  function clearActiveSession() {
+    try {
+      if (window.localStorage) window.localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+    } catch (_e) {
+      /* ignore */
+    }
   }
 
   function limitText(value, max) {
@@ -249,13 +293,15 @@
   function normalizeSession(row) {
     return {
       id: row.id || row.session_id || "",
+      sessionKey: row.session_key || row.sessionKey || row.stored_session_id || row.id || row.session_id || "",
       title: displayText(row.title, "Untitled"),
       preview: displayText(row.preview),
       source: displayText(row.source),
       model: displayText(row.model),
       messageCount: row.message_count || 0,
       lastActive: row.last_active || row.started_at || 0,
-      active: !!row.is_active
+      active: !!(row.is_active || row.current),
+      status: displayText(row.status)
     };
   }
 
@@ -482,7 +528,7 @@
                 type: "button",
                 key: s.id,
                 className: cx("ncg-session-row", active && "active"),
-                onClick: function () { props.onResume(s.id); }
+                onClick: function () { props.onResume(s.sessionKey || s.id); }
               },
                 h("div", { className: "ncg-session-title" },
                   h("span", null, s.title || "Untitled"),
@@ -1818,7 +1864,9 @@
     const [browserOpen, setBrowserOpen] = useState(false);
     const [filesVersion, setFilesVersion] = useState(0);
     const sessionIdRef = useRef(null);
+    const sessionKeyRef = useRef(null);
     const infoRef = useRef({});
+    const restoreAttemptedRef = useRef(false);
 
     const connected = connectionState === "open";
     const connecting = connectionState === "connecting";
@@ -1853,6 +1901,10 @@
     }, [sessionId]);
 
     useEffect(function () {
+      sessionKeyRef.current = sessionKey;
+    }, [sessionKey]);
+
+    useEffect(function () {
       infoRef.current = info || {};
     }, [info]);
 
@@ -1861,7 +1913,9 @@
       const offState = gw.onState(setConnectionState);
       const offAny = gw.onAny(function (ev) {
         const activeSessionId = sessionIdRef.current;
-        if (ev.session_id && activeSessionId && ev.session_id !== activeSessionId) return;
+        const storedSession = activeSessionId ? null : readActiveSession();
+        const expectedSessionId = activeSessionId || (storedSession && storedSession.sessionId);
+        if (ev.session_id && expectedSessionId && ev.session_id !== expectedSessionId) return;
         handleGatewayEvent(ev);
       });
       gw.connect()
@@ -1869,6 +1923,7 @@
           if (!cancelled) {
             setError("");
             setStatus("connected");
+            restoreActiveSession();
           }
         })
         .catch(function (err) {
@@ -1897,6 +1952,37 @@
       });
     }
 
+    function rememberActiveSession(liveId, stableKey) {
+      const stored = readActiveSession();
+      const nextLiveId = displayText(liveId || sessionIdRef.current);
+      const nextStableKey = displayText(stableKey || sessionKeyRef.current || (stored && stored.sessionKey) || nextLiveId);
+      if (nextLiveId) {
+        sessionIdRef.current = nextLiveId;
+      }
+      if (nextStableKey) {
+        sessionKeyRef.current = nextStableKey;
+      }
+      writeActiveSession(nextLiveId, nextStableKey);
+    }
+
+    async function restoreActiveSession() {
+      if (restoreAttemptedRef.current || sessionIdRef.current) return false;
+      restoreAttemptedRef.current = true;
+      const stored = readActiveSession();
+      if (!stored) return false;
+      const candidates = [];
+      [stored.sessionKey, stored.sessionId].forEach(function (value) {
+        if (value && candidates.indexOf(value) === -1) candidates.push(value);
+      });
+      for (let i = 0; i < candidates.length; i += 1) {
+        const ok = await resumeSession(candidates[i], { silent: true });
+        if (ok) return true;
+      }
+      clearActiveSession();
+      setStatus("connected");
+      return false;
+    }
+
     function handleGatewayEvent(ev) {
       const payload = ev.payload || {};
       if (ev.type === "session.info") {
@@ -1904,6 +1990,7 @@
         if (ev.session_id) {
           sessionIdRef.current = ev.session_id;
           setSessionId(ev.session_id);
+          rememberActiveSession(ev.session_id, sessionKeyRef.current);
         }
         if (payload.running === false) setRunning(false);
         return;
@@ -2047,7 +2134,10 @@
       });
       sessionIdRef.current = created.session_id;
       setSessionId(created.session_id);
-      setSessionKey(created.session_key || created.stored_session_id || created.session_id);
+      const createdKey = created.session_key || created.stored_session_id || created.session_id;
+      sessionKeyRef.current = createdKey;
+      setSessionKey(createdKey);
+      rememberActiveSession(created.session_id, createdKey);
       const nextInfo = Object.assign({}, created.info || {}, {
         workspaceRoot: workspace.root || "",
         workspaceName: workspace.name || ""
@@ -2127,6 +2217,7 @@
 
     function startNew() {
       sessionIdRef.current = null;
+      sessionKeyRef.current = null;
       setSessionId(null);
       setSessionKey(null);
       setMessages([]);
@@ -2137,18 +2228,23 @@
       setStatus("ready");
       setError("");
       setMobileSidebar(false);
+      clearActiveSession();
     }
 
-    async function resumeSession(storedId) {
-      if (!connected || !storedId) return;
-      setError("");
-      setStatus("resuming");
-      setMobileSidebar(false);
+    async function resumeSession(storedId, options) {
+      const silent = !!(options && options.silent);
+      if ((!connected && (!gw || gw.state !== "open")) || !storedId) return false;
+      if (!silent) setError("");
+      setStatus(silent ? "reconnecting" : "resuming");
+      if (!silent) setMobileSidebar(false);
       try {
         const resumed = await gw.request("session.resume", { session_id: storedId, cols: 100 }, 120000);
         sessionIdRef.current = resumed.session_id;
         setSessionId(resumed.session_id);
-        setSessionKey(resumed.session_key || resumed.resumed || storedId);
+        const resumedKey = resumed.session_key || resumed.resumed || storedId;
+        sessionKeyRef.current = resumedKey;
+        setSessionKey(resumedKey);
+        rememberActiveSession(resumed.session_id, resumedKey);
         infoRef.current = resumed.info || {};
         setInfo(infoRef.current);
         setRunning(!!resumed.running);
@@ -2169,9 +2265,13 @@
           });
         }
         setStatus(resumed.status || "ready");
+        return true;
       } catch (err) {
-        setError(parseApiError(err));
-        setStatus("error");
+        if (!silent) {
+          setError(parseApiError(err));
+          setStatus("error");
+        }
+        return false;
       }
     }
 
