@@ -30,6 +30,14 @@ ENV_WORKSPACE_ROOT_KEYS = (
     "HERMES_WORKSPACES_ROOT",
 )
 
+DOWNLOAD_NOT_VISIBLE_WARNING = (
+    "No completed download file became visible from the Hermes process. "
+    "When Chrome runs in a separate chrome-novnc container, the download "
+    "directory must be a volume shared by both the browser container and the "
+    "Hermes container. Some sites may also ignore synthetic element.click() "
+    "for downloads that require a real user gesture."
+)
+
 DEFAULT_WORKSPACE_ROOTS = (
     Path("/opt/data/nextchatgui-workspaces"),
     Path("/data/nextchatgui-workspaces"),
@@ -163,6 +171,25 @@ def _workspace_roots() -> list[Path]:
     return roots
 
 
+def _allowed_output_roots() -> list[Path]:
+    roots = _workspace_roots()
+    hermes_home = os.environ.get("HERMES_HOME", "").strip()
+    if hermes_home:
+        roots.append(Path(hermes_home).expanduser().resolve(strict=False))
+    for root in (Path("/opt/data"), Path("/data")):
+        if root.exists():
+            roots.append(root.resolve(strict=False))
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(root)
+    return deduped
+
+
 def _safe_output_path(value: str | None) -> Path | None:
     raw = str(value or "").strip()
     if not raw:
@@ -174,7 +201,7 @@ def _safe_output_path(value: str | None) -> Path | None:
     else:
         candidate = candidate.resolve(strict=False)
 
-    roots = _workspace_roots()
+    roots = _allowed_output_roots()
     if roots and was_absolute:
         allowed = False
         for root in roots:
@@ -452,14 +479,24 @@ def handle_downloads(args: dict, **kw) -> str:
         if action == "wait":
             timeout = max(1.0, min(float(args.get("timeout") or 60), 600.0))
             files = _wait_for_download(download_dir, timeout)
-            return tool_result({"success": True, "download_dir": str(download_dir), "files": files})
+            completed = [item for item in files if item.get("complete")]
+            payload: dict[str, Any] = {
+                "success": bool(completed),
+                "download_dir": str(download_dir),
+                "files": completed or files,
+                "all_files": files,
+                "timed_out": not bool(completed),
+            }
+            if not completed:
+                payload["warning"] = DOWNLOAD_NOT_VISIBLE_WARNING
+            return tool_result(payload)
         if action == "click_and_wait":
             selector = str(args.get("selector") or "")
             if not selector:
                 return tool_error("selector is required for action=click_and_wait")
             _set_download_dir(download_dir, args.get("target_id"))
             before = {item["name"]: item["modified_at"] for item in _download_files(download_dir)}
-            _runtime_eval(
+            click_result = _runtime_eval(
                 _click_selector_script(selector),
                 target_id=args.get("target_id"),
                 timeout=10,
@@ -467,7 +504,19 @@ def handle_downloads(args: dict, **kw) -> str:
             )
             timeout = max(1.0, min(float(args.get("timeout") or 60), 600.0))
             files = _wait_for_download(download_dir, timeout, before=before)
-            return tool_result({"success": True, "download_dir": str(download_dir), "files": files})
+            changed_files = _changed_downloads(files, before)
+            completed = [item for item in changed_files if item.get("complete")]
+            payload = {
+                "success": bool(completed),
+                "download_dir": str(download_dir),
+                "files": completed or changed_files,
+                "all_files": files,
+                "click_result": click_result,
+                "timed_out": not bool(completed),
+            }
+            if not completed:
+                payload["warning"] = DOWNLOAD_NOT_VISIBLE_WARNING
+            return tool_result(payload)
         return tool_error(f"Unknown action: {action}")
     except Exception as exc:
         return tool_error(f"next_browser_downloads failed: {exc}")
@@ -533,7 +582,15 @@ def _download_dir(value: str | None) -> Path:
         assert path is not None
         directory = path.parent
     else:
-        base = Path(os.environ.get("HERMES_NEXTCHATGUI_DOWNLOAD_DIR", "") or Path.cwd() / "downloads")
+        configured = os.environ.get("HERMES_NEXTCHATGUI_DOWNLOAD_DIR", "").strip()
+        if configured:
+            base = Path(configured)
+        elif Path("/opt/data").exists():
+            base = Path("/opt/data/nextchatgui-downloads")
+        elif Path("/data").exists():
+            base = Path("/data/nextchatgui-downloads")
+        else:
+            base = Path.cwd() / "downloads"
         directory = base.expanduser().resolve(strict=False)
     directory.mkdir(parents=True, exist_ok=True)
     return directory
@@ -572,6 +629,14 @@ def _download_files(download_dir: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _changed_downloads(files: list[dict[str, Any]], before: dict[str, float]) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in files
+        if item["name"] not in before or item["modified_at"] != before[item["name"]]
+    ]
+
+
 def _wait_for_download(
     download_dir: Path,
     timeout: float,
@@ -583,11 +648,7 @@ def _wait_for_download(
     while time.time() < deadline:
         files = _download_files(download_dir)
         last_files = files
-        changed = [
-            item
-            for item in files
-            if item["name"] not in before or item["modified_at"] != before[item["name"]]
-        ]
+        changed = _changed_downloads(files, before)
         if changed and all(item["complete"] for item in changed):
             return changed
         time.sleep(0.5)

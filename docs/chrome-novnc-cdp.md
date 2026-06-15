@@ -35,4 +35,7 @@ The same CDP endpoint also powers the `next_browser` Hermes tools. See
 `docs/browser-tools.md` for the model-facing table extraction, wait, download,
 network capture, form fill, and tab tools.
 
+For download tools, mount the same host data directory into `chrome-novnc` and
+Hermes at the same in-container path, such as `/opt/data`.
+
 Do not expose `9222` publicly. CDP gives full browser inspection and control.

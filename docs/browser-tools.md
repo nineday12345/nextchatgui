@@ -29,6 +29,18 @@ The network recorder is page-injected JavaScript, so it captures requests made
 after `next_browser_capture_network(action="start")`. It is intentionally
 lightweight and does not replace full CDP `Network.*` event tracing.
 
+Download handling sets Chrome's download directory through CDP. If Chrome runs
+in a separate `chrome-novnc` container, that directory must be backed by a
+volume mounted into both `chrome-novnc` and Hermes. Otherwise Chrome may
+download the file successfully inside the browser container while Hermes sees an
+empty directory. In that case `next_browser_downloads(action="wait")` and
+`action="click_and_wait"` return `success: false` with a warning.
+
+By default downloads use `HERMES_NEXTCHATGUI_DOWNLOAD_DIR` when set, then
+`/opt/data/nextchatgui-downloads` or `/data/nextchatgui-downloads` when those
+data roots exist, and finally `./downloads`. For Docker, mount the same host
+directory into both containers at the same path, for example `/opt/data`.
+
 For complex autocomplete widgets, use `next_browser_fill_form` as a first pass,
 then verify with `next_browser_wait_for_text`, `next_browser_wait_for_selector`,
 or `next_browser_extract_tables`.
