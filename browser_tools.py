@@ -469,6 +469,33 @@ EVIDENCE_SCHEMA: dict[str, Any] = {
 }
 
 
+HUMAN_CHECKPOINT_SCHEMA: dict[str, Any] = {
+    "name": "next_browser_human_checkpoint",
+    "description": (
+        "Pause browser automation so the user can manually solve a CAPTCHA, "
+        "slider verification, login, or MFA challenge in the visible browser. "
+        "This tool does not bypass verification; it waits until the challenge "
+        "appears cleared, the page changes, or an explicit success condition is met."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "target_id": {"type": "string"},
+            "reason": {"type": "string", "description": "Short user-facing reason, e.g. Solve OOCL slider verification."},
+            "mode": {"type": "string", "enum": ["captcha", "login", "mfa", "manual"], "default": "captcha"},
+            "wait_for_text": {"type": "string", "description": "Optional text that means the user finished verification."},
+            "wait_for_selector": {"type": "string", "description": "Optional selector that should appear after verification."},
+            "wait_until_text_gone": {"type": "string", "description": "Optional text that should disappear after verification."},
+            "wait_until_selector_gone": {"type": "string", "description": "Optional selector that should disappear after verification."},
+            "require_page_change": {"type": "boolean", "default": False},
+            "timeout": {"type": "number", "default": 300},
+            "poll_interval": {"type": "number", "default": 1},
+        },
+        "additionalProperties": False,
+    },
+}
+
+
 SHIPPING_DETECT_SCHEMA: dict[str, Any] = {
     "name": "next_browser_shipping_detect",
     "description": (
@@ -871,6 +898,35 @@ def handle_evidence(args: dict, **kw) -> str:
         return tool_result(payload)
     except Exception as exc:
         return tool_error(f"next_browser_evidence failed: {exc}")
+
+
+def handle_human_checkpoint(args: dict, **kw) -> str:
+    try:
+        target = _pick_target(args.get("target_id"))
+        timeout = max(5.0, min(float(args.get("timeout") or 300), 1800.0))
+        poll_interval = max(0.25, min(float(args.get("poll_interval") or 1), 10.0))
+        payload = _runtime_eval(
+            _human_checkpoint_script(
+                reason=str(args.get("reason") or ""),
+                mode=str(args.get("mode") or "captcha"),
+                wait_for_text=str(args.get("wait_for_text") or ""),
+                wait_for_selector=str(args.get("wait_for_selector") or ""),
+                wait_until_text_gone=str(args.get("wait_until_text_gone") or ""),
+                wait_until_selector_gone=str(args.get("wait_until_selector_gone") or ""),
+                require_page_change=bool(args.get("require_page_change", False)),
+                timeout=timeout,
+                poll_interval=poll_interval,
+            ),
+            target_id=target,
+            timeout=timeout + 10,
+            task_id=kw.get("task_id"),
+        )
+        if not isinstance(payload, dict):
+            payload = {"result": payload}
+        payload["target"] = _target_status(target)
+        return tool_result(payload)
+    except Exception as exc:
+        return tool_error(f"next_browser_human_checkpoint failed: {exc}")
 
 
 def handle_shipping_detect(args: dict, **kw) -> str:
@@ -1771,6 +1827,157 @@ def _evidence_script(max_tables: int, max_network_entries: int, text_chars: int)
     body_chars: bodyText.length
   }};
 }})()
+"""
+
+
+def _human_checkpoint_script(
+    reason: str,
+    mode: str,
+    wait_for_text: str,
+    wait_for_selector: str,
+    wait_until_text_gone: str,
+    wait_until_selector_gone: str,
+    require_page_change: bool,
+    timeout: float,
+    poll_interval: float,
+) -> str:
+    return f"""
+new Promise((resolve) => {{
+  const reason = {json.dumps(reason, ensure_ascii=False)};
+  const mode = {json.dumps(mode)};
+  const waitForText = {json.dumps(wait_for_text, ensure_ascii=False)};
+  const waitForSelector = {json.dumps(wait_for_selector)};
+  const waitUntilTextGone = {json.dumps(wait_until_text_gone, ensure_ascii=False)};
+  const waitUntilSelectorGone = {json.dumps(wait_until_selector_gone)};
+  const requirePageChange = {json.dumps(bool(require_page_change))};
+  const timeoutMs = {int(timeout * 1000)};
+  const pollMs = {int(poll_interval * 1000)};
+  const started = Date.now();
+  const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+  const norm = (value) => clean(value).toLowerCase();
+  const visible = (el) => {{
+    if (!el) return false;
+    const style = getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+  }};
+  const textOfPage = () => document.body ? clean(document.body.innerText || document.body.textContent || '') : '';
+  const signature = () => {{
+    const text = textOfPage();
+    return {{
+      url: location.href,
+      title: document.title,
+      text_head: text.slice(0, 600),
+      body_chars: text.length
+    }};
+  }};
+  const initial = signature();
+  const captchaPatterns = [
+    /captcha/i,
+    /re\\s*captcha/i,
+    /hcaptcha/i,
+    /turnstile/i,
+    /cloudflare/i,
+    /verify\\s+(you|yourself|human|identity)/i,
+    /human\\s+verification/i,
+    /security\\s+check/i,
+    /slide\\s+to\\s+fit\\s+the\\s+piece/i,
+    /drag\\s+.*(slider|piece|puzzle)/i,
+    /robot/i,
+    /验证码|人机验证|安全验证|滑块|拖动|拼图|验证/i
+  ];
+  const captchaSelectors = [
+    'iframe[src*="recaptcha"]',
+    'iframe[src*="hcaptcha"]',
+    'iframe[src*="turnstile"]',
+    '.g-recaptcha',
+    '.h-captcha',
+    '[class*="captcha" i]',
+    '[id*="captcha" i]',
+    '[class*="turnstile" i]',
+    '[id*="turnstile" i]',
+    '[class*="verify" i]',
+    '[id*="verify" i]',
+    '#cf-challenge-running',
+    '.cf-challenge',
+    '.geetest_panel',
+    '[class*="geetest" i]',
+    '[id*="geetest" i]',
+    '[class*="slider" i]',
+    '[id*="slider" i]'
+  ];
+  const detectChallenge = () => {{
+    const pageText = textOfPage();
+    const textMatches = captchaPatterns
+      .filter((pattern) => pattern.test(pageText))
+      .map((pattern) => String(pattern));
+    const selectorMatches = [];
+    for (const selector of captchaSelectors) {{
+      try {{
+        const nodes = Array.from(document.querySelectorAll(selector)).filter(visible);
+        if (nodes.length) selectorMatches.push({{ selector, count: nodes.length }});
+      }} catch (_e) {{}}
+    }}
+    return {{
+      detected: textMatches.length > 0 || selectorMatches.length > 0,
+      text_matches: textMatches.slice(0, 10),
+      selector_matches: selectorMatches.slice(0, 20)
+    }};
+  }};
+  const conditionState = () => {{
+    const text = textOfPage();
+    const current = signature();
+    const challenge = detectChallenge();
+    const checks = [];
+    if (waitForText) checks.push({{ name: 'wait_for_text', ok: norm(text).includes(norm(waitForText)), value: waitForText }});
+    if (waitForSelector) {{
+      let ok = false;
+      try {{ ok = Array.from(document.querySelectorAll(waitForSelector)).some(visible); }} catch (_e) {{}}
+      checks.push({{ name: 'wait_for_selector', ok, value: waitForSelector }});
+    }}
+    if (waitUntilTextGone) checks.push({{ name: 'wait_until_text_gone', ok: !norm(text).includes(norm(waitUntilTextGone)), value: waitUntilTextGone }});
+    if (waitUntilSelectorGone) {{
+      let ok = true;
+      try {{ ok = !Array.from(document.querySelectorAll(waitUntilSelectorGone)).some(visible); }} catch (_e) {{}}
+      checks.push({{ name: 'wait_until_selector_gone', ok, value: waitUntilSelectorGone }});
+    }}
+    if (requirePageChange) {{
+      const changed = current.url !== initial.url || current.title !== initial.title || current.text_head !== initial.text_head || Math.abs(current.body_chars - initial.body_chars) > 80;
+      checks.push({{ name: 'page_changed', ok: changed, value: 'url/title/body changed' }});
+    }}
+    if (!checks.length) {{
+      checks.push({{ name: 'challenge_cleared_or_page_changed', ok: !challenge.detected || current.url !== initial.url || current.title !== initial.title, value: 'auto-detected challenge cleared' }});
+    }}
+    return {{ current, challenge, checks, ok: checks.every((check) => check.ok) }};
+  }};
+  const initialChallenge = detectChallenge();
+  const tick = () => {{
+    const state = conditionState();
+    const elapsed = Date.now() - started;
+    if (state.ok || elapsed >= timeoutMs) {{
+      resolve({{
+        success: state.ok,
+        needs_human: !state.ok,
+        timed_out: !state.ok && elapsed >= timeoutMs,
+        reason,
+        mode,
+        elapsed_ms: elapsed,
+        waiting_for: state.checks,
+        captcha_detected_initial: initialChallenge,
+        captcha_detected_final: state.challenge,
+        url: location.href,
+        title: document.title,
+        body_preview: textOfPage().slice(0, 1200),
+        message: state.ok
+          ? 'Human checkpoint completed; browser automation can continue.'
+          : 'Timed out while waiting for manual verification. Ask the user to finish verification in the visible browser and retry.'
+      }});
+      return;
+    }}
+    setTimeout(tick, pollMs);
+  }};
+  tick();
+}})
 """
 
 

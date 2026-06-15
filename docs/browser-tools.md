@@ -33,6 +33,10 @@ Tools:
 - `next_browser_evidence`: collect a compact evidence package containing the
   current target, forms, hidden values, recent network/form logs, table
   summaries, visible text preview, and optionally a screenshot.
+- `next_browser_human_checkpoint`: pause automation while the user manually
+  solves a CAPTCHA, slider verification, login, or MFA challenge in the visible
+  browser. It waits for a challenge to clear, a page change, or an explicit
+  selector/text condition. It does not bypass verification.
 - `next_browser_shipping_detect`: detect Evergreen/ShipmentLink or OOCL schedule
   pages and summarize forms, hidden fields, detail triggers, and recommended
   next tools.
@@ -75,15 +79,18 @@ For old JSP/business pages such as schedules:
 3. Call `next_browser_capture_network(action="start", target_id=...)`.
 4. Fill normal fields with `next_browser_fill_form`; use
    `next_browser_select_autocomplete` for port/location widgets.
-5. Submit the form.
-6. If text waits fail, `next_browser_wait_for_text` returns `body_preview` so
+5. If a CAPTCHA/slider/login appears, call
+   `next_browser_human_checkpoint(reason="Solve carrier verification", timeout=300)`
+   and wait for the user to finish it in the visible browser.
+6. Submit the form.
+7. If text waits fail, `next_browser_wait_for_text` returns `body_preview` so
    the model can adjust the expected phrase.
-7. Use `next_browser_shipping_extract_schedules(carrier="evergreen"|"oocl")`
+8. Use `next_browser_shipping_extract_schedules(carrier="evergreen"|"oocl")`
    first. Fall back to `next_browser_extract_tables(selector=..., max_chars=...)`
    if the page has a new layout.
-8. For Evergreen/ShipmentLink Details links, call
+9. For Evergreen/ShipmentLink Details links, call
    `next_browser_shipping_modal(params="seq=...")`.
-9. Call `next_browser_evidence(output_path=...)` to save a reproducible query
+10. Call `next_browser_evidence(output_path=...)` to save a reproducible query
    package with form POST fields, hidden values, network/form logs, and table
    summaries.
 
@@ -94,4 +101,6 @@ For the current exam constraint, the intended carrier presets are:
   `next_browser_shipping_modal` for `Details`.
 - OOCL: OOCL Sailing Schedule pages, including `pbservice.moc.oocl.com` mobile
   schedule forms; capture form POST data and extract schedules with
-  `carrier="oocl"`.
+  `carrier="oocl"`. If the page shows "Slide to fit the piece to get verified",
+  use `next_browser_human_checkpoint` and have the user solve the slider in the
+  visible browser.
