@@ -31,4 +31,8 @@ Each Hermes session is bound to a primary browser tab. When the Browser drawer
 is open and the active conversation changes, the plugin activates that session's
 bound tab or creates one if it no longer exists.
 
+The same CDP endpoint also powers the `next_browser` Hermes tools. See
+`docs/browser-tools.md` for the model-facing table extraction, wait, download,
+network capture, form fill, and tab tools.
+
 Do not expose `9222` publicly. CDP gives full browser inspection and control.

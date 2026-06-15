@@ -4,5 +4,12 @@ version: 0.1.0
 description: A NEXTagent-inspired conversation GUI for the Hermes dashboard chat route.
 author: nineday
 kind: standalone
-provides_tools: []
+provides_tools:
+  - next_browser_tabs
+  - next_browser_extract_tables
+  - next_browser_wait_for_text
+  - next_browser_wait_for_selector
+  - next_browser_downloads
+  - next_browser_capture_network
+  - next_browser_fill_form
 provides_hooks: []
