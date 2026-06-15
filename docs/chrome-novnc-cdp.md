@@ -27,4 +27,8 @@ If noVNC is exposed on another internal host or subdomain, set
 The Browser drawer uses the private CDP URL to list, create, activate, and
 close Chrome tabs while the iframe shows the noVNC view.
 
+Each Hermes session is bound to a primary browser tab. When the Browser drawer
+is open and the active conversation changes, the plugin activates that session's
+bound tab or creates one if it no longer exists.
+
 Do not expose `9222` publicly. CDP gives full browser inspection and control.

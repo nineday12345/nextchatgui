@@ -39,6 +39,7 @@ CONTAINER_DEFAULT_WORKSPACE_ROOTS = (
 )
 
 WORKSPACE_CONTEXT_FILE = ".hermes.md"
+BROWSER_BINDINGS_FILE = "nextchatgui-browser-tabs.json"
 WORKSPACE_CONTEXT = """# NextChatGUI Workspace Notes
 
 - Treat this folder as the current working directory and prefer relative paths when creating or editing files.
@@ -60,14 +61,21 @@ class FileDeleteRequest(BaseModel):
 
 class BrowserTabCreateRequest(BaseModel):
     url: str | None = None
+    session_id: str | None = None
 
 
 class BrowserTabActivateRequest(BaseModel):
     target_id: str | None = None
+    session_id: str | None = None
 
 
 class BrowserTabCloseRequest(BaseModel):
     target_id: str
+
+
+class BrowserSessionTabRequest(BaseModel):
+    session_id: str
+    create: bool = True
 
 
 def _hermes_home() -> Path:
@@ -379,6 +387,43 @@ def _browser_cdp_request(path: str, method: str = "GET") -> Any:
         return {"message": raw}
 
 
+def _browser_bindings_path() -> Path:
+    return _hermes_home() / BROWSER_BINDINGS_FILE
+
+
+def _browser_load_bindings() -> dict[str, str]:
+    path = _browser_bindings_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        str(key): str(value)
+        for key, value in payload.items()
+        if str(key).strip() and str(value).strip()
+    }
+
+
+def _browser_save_bindings(bindings: dict[str, str]) -> None:
+    path = _browser_bindings_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(bindings, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not save browser workspace bindings: {exc}") from exc
+
+
+def _browser_session_id(value: str | None) -> str:
+    session_id = str(value or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Browser workspace session_id is required")
+    return session_id[:200]
+
+
 def _browser_tab_item(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": str(row.get("id") or ""),
@@ -400,6 +445,74 @@ def _browser_tabs() -> list[dict[str, Any]]:
         for row in payload
         if isinstance(row, dict) and row.get("type") == "page" and row.get("id")
     ]
+
+
+def _browser_create_tab(url: str) -> dict[str, Any]:
+    path = f"/json/new?{urllib.parse.quote(url, safe='')}"
+    try:
+        created = _browser_cdp_request(path, method="PUT")
+    except HTTPException as exc:
+        if "405" not in str(exc.detail):
+            raise
+        created = _browser_cdp_request(path, method="GET")
+    if not isinstance(created, dict) or not created.get("id"):
+        raise HTTPException(status_code=502, detail="Browser CDP did not create a tab")
+    return _browser_tab_item(created)
+
+
+def _browser_activate_tab(target_id: str) -> dict[str, Any]:
+    target = str(target_id or "").strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="Browser tab target_id is required")
+    result = _browser_cdp_request(f"/json/activate/{urllib.parse.quote(target, safe='')}")
+    return result if isinstance(result, dict) else {}
+
+
+def _browser_bind_session(session_id: str | None, target_id: str | None) -> None:
+    if not session_id or not target_id:
+        return
+    bindings = _browser_load_bindings()
+    bindings[_browser_session_id(session_id)] = str(target_id)
+    _browser_save_bindings(bindings)
+
+
+def _browser_prune_target(target_id: str) -> None:
+    bindings = _browser_load_bindings()
+    next_bindings = {
+        session_id: bound_target
+        for session_id, bound_target in bindings.items()
+        if bound_target != target_id
+    }
+    if next_bindings != bindings:
+        _browser_save_bindings(next_bindings)
+
+
+def _browser_session_tab(session_id: str, create: bool = True) -> dict[str, Any]:
+    session_key = _browser_session_id(session_id)
+    bindings = _browser_load_bindings()
+    tabs = _browser_tabs()
+    target_id = bindings.get(session_key)
+    bound_tab = next((tab for tab in tabs if tab["id"] == target_id), None) if target_id else None
+
+    if bound_tab is None and create:
+        bound_tab = _browser_create_tab("about:blank")
+        bindings[session_key] = bound_tab["id"]
+        _browser_save_bindings(bindings)
+        tabs = _browser_tabs()
+    elif bound_tab is None and target_id:
+        bindings.pop(session_key, None)
+        _browser_save_bindings(bindings)
+
+    if bound_tab is not None:
+        _browser_activate_tab(bound_tab["id"])
+        tabs = _browser_tabs()
+
+    return {
+        "ok": bound_tab is not None,
+        "target_id": bound_tab["id"] if bound_tab else "",
+        "tab": bound_tab,
+        "tabs": tabs,
+    }
 
 
 def _is_agent_page(tab: dict[str, Any]) -> bool:
@@ -486,18 +599,12 @@ async def browser_tabs() -> dict[str, Any]:
 @router.post("/browser/tabs")
 async def browser_tab_create(body: BrowserTabCreateRequest) -> dict[str, Any]:
     target_url = _normalize_new_tab_url(body.url)
-    path = f"/json/new?{urllib.parse.quote(target_url, safe='')}"
-    try:
-        created = _browser_cdp_request(path, method="PUT")
-    except HTTPException as exc:
-        if "405" not in str(exc.detail):
-            raise
-        created = _browser_cdp_request(path, method="GET")
-
-    tab = _browser_tab_item(created) if isinstance(created, dict) and created.get("id") else None
+    tab = _browser_create_tab(target_url)
+    _browser_bind_session(body.session_id, tab["id"])
     return {
         "ok": True,
         "tab": tab,
+        "target_id": tab["id"],
         "tabs": _browser_tabs(),
     }
 
@@ -509,13 +616,19 @@ async def browser_tab_activate(body: BrowserTabActivateRequest) -> dict[str, Any
     if not target_id:
         target_id = _pick_browser_tab(tabs)["id"]
 
-    result = _browser_cdp_request(f"/json/activate/{urllib.parse.quote(target_id, safe='')}")
+    result = _browser_activate_tab(target_id)
+    _browser_bind_session(body.session_id, target_id)
     return {
         "ok": True,
         "target_id": target_id,
         "message": result.get("message", "") if isinstance(result, dict) else "",
         "tabs": _browser_tabs(),
     }
+
+
+@router.post("/browser/session-tab")
+async def browser_session_tab(body: BrowserSessionTabRequest) -> dict[str, Any]:
+    return _browser_session_tab(body.session_id, body.create)
 
 
 @router.post("/browser/tabs/close")
@@ -525,6 +638,7 @@ async def browser_tab_close(body: BrowserTabCloseRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="Browser tab target_id is required")
 
     result = _browser_cdp_request(f"/json/close/{urllib.parse.quote(target_id, safe='')}")
+    _browser_prune_target(target_id)
     return {
         "ok": True,
         "target_id": target_id,

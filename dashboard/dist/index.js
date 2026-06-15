@@ -1393,6 +1393,34 @@
         });
     }, []);
 
+    const ensureSessionTab = useCallback(function (silent) {
+      if (!props.sessionId) return loadTabs(silent);
+      if (!silent) setTabLoading(true);
+      return postBrowser("/browser/session-tab", {
+        session_id: props.sessionId,
+        create: true
+      })
+        .then(function (data) {
+          const nextTabs = Array.isArray(data && data.tabs) ? data.tabs : [];
+          setTabs(nextTabs);
+          if (data && data.target_id) {
+            setActiveTabId(data.target_id);
+          } else if (nextTabs.length) {
+            setActiveTabId(nextTabs[0].id);
+          } else {
+            setActiveTabId("");
+          }
+          return nextTabs;
+        })
+        .catch(function (err) {
+          setError(parseApiError(err));
+          return [];
+        })
+        .finally(function () {
+          if (!silent) setTabLoading(false);
+        });
+    }, [props.sessionId, loadTabs]);
+
     const loadConfig = useCallback(function () {
       let nextConfig = {};
       setLoading(true);
@@ -1407,7 +1435,7 @@
         })
         .then(function (result) {
           if (result) setStatus(result);
-          if (nextConfig.cdp_url) return loadTabs(true);
+          if (nextConfig.cdp_url) return props.sessionId ? ensureSessionTab(true) : loadTabs(true);
           setTabs([]);
           setActiveTabId("");
           return null;
@@ -1418,7 +1446,7 @@
         .finally(function () {
           setLoading(false);
         });
-    }, [props.gw, props.connected, loadTabs]);
+    }, [props.gw, props.connected, props.sessionId, loadTabs, ensureSessionTab]);
 
     useEffect(function () {
       if (props.open) loadConfig();
@@ -1436,7 +1464,7 @@
       }, 120000)
         .then(function (result) {
           setStatus(result || {});
-          return loadTabs(true);
+          return props.sessionId ? ensureSessionTab(true) : loadTabs(true);
         })
         .catch(function (err) {
           setError(parseApiError(err));
@@ -1488,7 +1516,10 @@
       if (!(config && config.cdp_url)) return;
       setTabLoading(true);
       setError("");
-      postBrowser("/browser/tabs/activate", targetId ? { target_id: targetId } : {})
+      postBrowser("/browser/tabs/activate", {
+        target_id: targetId || "",
+        session_id: props.sessionId || ""
+      })
         .then(function (data) {
           if (data && data.target_id) setActiveTabId(data.target_id);
           if (Array.isArray(data && data.tabs)) setTabs(data.tabs);
@@ -1506,7 +1537,10 @@
       if (!(config && config.cdp_url)) return;
       setTabLoading(true);
       setError("");
-      postBrowser("/browser/tabs", { url: newTabUrl })
+      postBrowser("/browser/tabs", {
+        url: newTabUrl,
+        session_id: props.sessionId || ""
+      })
         .then(function (data) {
           setNewTabUrl("");
           if (data && data.tab && data.tab.id) setActiveTabId(data.tab.id);
