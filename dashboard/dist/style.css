@@ -1224,6 +1224,126 @@
   font-weight: 800;
 }
 
+.ncg-browser-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 12px 10px;
+  border-bottom: 1px solid var(--ncg-border-subtle);
+  background: color-mix(in srgb, var(--ncg-bg-workspace) 52%, transparent);
+}
+
+.ncg-browser-tab-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ncg-browser-tab-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--ncg-border-subtle);
+  border-radius: 8px;
+  background: var(--ncg-bg-elevated);
+  color: var(--ncg-text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.ncg-browser-tab-input:focus {
+  border-color: var(--ncg-accent);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--ncg-accent-soft);
+}
+
+.ncg-browser-tab-list {
+  display: flex;
+  gap: 7px;
+  min-height: 48px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.ncg-browser-tab {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  flex: 0 0 210px;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--ncg-border-subtle);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ncg-bg-elevated) 92%, var(--ncg-bg-workspace) 8%);
+}
+
+.ncg-browser-tab-active {
+  border-color: color-mix(in srgb, var(--ncg-accent) 72%, var(--ncg-border-subtle) 28%);
+  background: var(--ncg-accent-soft);
+}
+
+.ncg-browser-tab-main,
+.ncg-browser-tab-close {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.ncg-browser-tab-main {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  padding: 7px 8px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ncg-browser-tab-title,
+.ncg-browser-tab-url {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ncg-browser-tab-title {
+  color: var(--ncg-text);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.ncg-browser-tab-url {
+  margin-top: 2px;
+  color: var(--ncg-text-muted);
+  font-size: 11px;
+}
+
+.ncg-browser-tab-close {
+  display: grid;
+  place-items: center;
+  min-width: 28px;
+  border-left: 1px solid var(--ncg-border-subtle);
+  color: var(--ncg-text-muted);
+  cursor: pointer;
+}
+
+.ncg-browser-tab-main:hover,
+.ncg-browser-tab-close:hover {
+  background: var(--ncg-bg-hover);
+  color: var(--ncg-text);
+}
+
+.ncg-browser-tab-empty {
+  display: flex;
+  align-items: center;
+  min-height: 42px;
+  color: var(--ncg-text-muted);
+  font-size: 12px;
+}
+
 .ncg-browser-frame {
   flex: 1;
   min-height: 0;

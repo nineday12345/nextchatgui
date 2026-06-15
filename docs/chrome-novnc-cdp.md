@@ -24,4 +24,7 @@ BROWSER_CDP_URL=http://chrome-novnc:9222
 If noVNC is exposed on another internal host or subdomain, set
 `HERMES_NEXTCHATGUI_BROWSER_NOVNC_URL` to that URL instead.
 
+The Browser drawer uses the private CDP URL to list, create, activate, and
+close Chrome tabs while the iframe shows the noVNC view.
+
 Do not expose `9222` publicly. CDP gives full browser inspection and control.

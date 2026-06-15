@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
 import mimetypes
 import os
 import re
 import secrets
 import shutil
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -52,6 +56,18 @@ class FileDeleteRequest(BaseModel):
     cwd: str
     path: str
     confirm: bool = False
+
+
+class BrowserTabCreateRequest(BaseModel):
+    url: str | None = None
+
+
+class BrowserTabActivateRequest(BaseModel):
+    target_id: str | None = None
+
+
+class BrowserTabCloseRequest(BaseModel):
+    target_id: str
 
 
 def _hermes_home() -> Path:
@@ -326,6 +342,99 @@ def _tree_item(path: Path, workspace: Path, include_hidden: bool, counter: dict[
     return item
 
 
+def _browser_cdp_base() -> str:
+    raw = _first_env(ENV_BROWSER_CDP_KEYS).rstrip("/")
+    if not raw:
+        raise HTTPException(status_code=503, detail="Browser CDP URL is not configured")
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=503, detail="Browser CDP URL must be an http(s) URL")
+    return raw
+
+
+def _browser_cdp_request(path: str, method: str = "GET") -> Any:
+    target = f"{_browser_cdp_base()}{path if path.startswith('/') else '/' + path}"
+    request = urllib.request.Request(
+        target,
+        headers={"Accept": "application/json, text/plain, */*"},
+        method=method,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            raw = response.read().decode("utf-8", "replace").strip()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace").strip()
+        message = detail or str(exc.reason) or "CDP request failed"
+        raise HTTPException(status_code=502, detail=f"CDP request failed: {exc.code} {message}") from exc
+    except urllib.error.URLError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach browser CDP: {exc.reason}") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach browser CDP: {exc}") from exc
+
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {"message": raw}
+
+
+def _browser_tab_item(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(row.get("id") or ""),
+        "target_id": str(row.get("id") or ""),
+        "type": str(row.get("type") or ""),
+        "title": str(row.get("title") or ""),
+        "url": str(row.get("url") or ""),
+        "description": str(row.get("description") or ""),
+        "favicon_url": str(row.get("faviconUrl") or row.get("favicon_url") or ""),
+    }
+
+
+def _browser_tabs() -> list[dict[str, Any]]:
+    payload = _browser_cdp_request("/json/list")
+    if not isinstance(payload, list):
+        raise HTTPException(status_code=502, detail="Browser CDP did not return a target list")
+    return [
+        _browser_tab_item(row)
+        for row in payload
+        if isinstance(row, dict) and row.get("type") == "page" and row.get("id")
+    ]
+
+
+def _is_agent_page(tab: dict[str, Any]) -> bool:
+    url = str(tab.get("url") or "")
+    if not url:
+        return False
+    ignored_prefixes = ("chrome://", "devtools://", "blob:chrome://")
+    return not url.startswith(ignored_prefixes)
+
+
+def _pick_browser_tab(tabs: list[dict[str, Any]]) -> dict[str, Any]:
+    if not tabs:
+        raise HTTPException(status_code=404, detail="No browser tabs found")
+    for tab in tabs:
+        if _is_agent_page(tab):
+            return tab
+    return tabs[0]
+
+
+def _normalize_new_tab_url(value: str | None) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "about:blank"
+
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme:
+        if parsed.scheme in {"http", "https", "about"}:
+            return raw
+        raise HTTPException(status_code=400, detail="Only http(s) and about: URLs can be opened")
+
+    if "." in raw and not re.search(r"\s", raw):
+        return f"https://{raw}"
+    return f"https://www.google.com/search?q={urllib.parse.quote_plus(raw)}"
+
+
 @router.get("/workspaces/config")
 async def workspace_config() -> dict:
     root = _workspace_root()
@@ -363,6 +472,64 @@ async def browser_config() -> dict[str, Any]:
         "configured": bool(novnc_url or cdp_url),
         "novnc_env_keys": ENV_BROWSER_NOVNC_KEYS,
         "cdp_env_keys": ENV_BROWSER_CDP_KEYS,
+    }
+
+
+@router.get("/browser/tabs")
+async def browser_tabs() -> dict[str, Any]:
+    return {
+        "tabs": _browser_tabs(),
+        "cdp_configured": bool(_first_env(ENV_BROWSER_CDP_KEYS)),
+    }
+
+
+@router.post("/browser/tabs")
+async def browser_tab_create(body: BrowserTabCreateRequest) -> dict[str, Any]:
+    target_url = _normalize_new_tab_url(body.url)
+    path = f"/json/new?{urllib.parse.quote(target_url, safe='')}"
+    try:
+        created = _browser_cdp_request(path, method="PUT")
+    except HTTPException as exc:
+        if "405" not in str(exc.detail):
+            raise
+        created = _browser_cdp_request(path, method="GET")
+
+    tab = _browser_tab_item(created) if isinstance(created, dict) and created.get("id") else None
+    return {
+        "ok": True,
+        "tab": tab,
+        "tabs": _browser_tabs(),
+    }
+
+
+@router.post("/browser/tabs/activate")
+async def browser_tab_activate(body: BrowserTabActivateRequest) -> dict[str, Any]:
+    tabs = _browser_tabs()
+    target_id = str(body.target_id or "").strip()
+    if not target_id:
+        target_id = _pick_browser_tab(tabs)["id"]
+
+    result = _browser_cdp_request(f"/json/activate/{urllib.parse.quote(target_id, safe='')}")
+    return {
+        "ok": True,
+        "target_id": target_id,
+        "message": result.get("message", "") if isinstance(result, dict) else "",
+        "tabs": _browser_tabs(),
+    }
+
+
+@router.post("/browser/tabs/close")
+async def browser_tab_close(body: BrowserTabCloseRequest) -> dict[str, Any]:
+    target_id = str(body.target_id or "").strip()
+    if not target_id:
+        raise HTTPException(status_code=400, detail="Browser tab target_id is required")
+
+    result = _browser_cdp_request(f"/json/close/{urllib.parse.quote(target_id, safe='')}")
+    return {
+        "ok": True,
+        "target_id": target_id,
+        "message": result.get("message", "") if isinstance(result, dict) else "",
+        "tabs": _browser_tabs(),
     }
 
 

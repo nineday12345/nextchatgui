@@ -1364,22 +1364,53 @@
   function BrowserDrawer(props) {
     const [config, setConfig] = useState(null);
     const [status, setStatus] = useState(null);
+    const [tabs, setTabs] = useState([]);
+    const [activeTabId, setActiveTabId] = useState("");
+    const [newTabUrl, setNewTabUrl] = useState("");
     const [loading, setLoading] = useState(false);
+    const [tabLoading, setTabLoading] = useState(false);
     const [error, setError] = useState("");
     const frameRef = useRef(null);
 
+    const loadTabs = useCallback(function (silent) {
+      if (!silent) setTabLoading(true);
+      return SDK.fetchJSON(PLUGIN_API + "/browser/tabs")
+        .then(function (data) {
+          const nextTabs = Array.isArray(data && data.tabs) ? data.tabs : [];
+          setTabs(nextTabs);
+          setActiveTabId(function (current) {
+            if (current && nextTabs.some(function (tab) { return tab.id === current; })) return current;
+            return nextTabs.length ? nextTabs[0].id : "";
+          });
+          return nextTabs;
+        })
+        .catch(function (err) {
+          setError(parseApiError(err));
+          return [];
+        })
+        .finally(function () {
+          if (!silent) setTabLoading(false);
+        });
+    }, []);
+
     const loadConfig = useCallback(function () {
+      let nextConfig = {};
       setLoading(true);
       setError("");
       SDK.fetchJSON(PLUGIN_API + "/browser/config")
         .then(function (data) {
-          setConfig(data || {});
+          nextConfig = data || {};
+          setConfig(nextConfig);
           return props.gw && props.connected
             ? props.gw.request("browser.manage", { action: "status" }, 30000)
             : null;
         })
         .then(function (result) {
           if (result) setStatus(result);
+          if (nextConfig.cdp_url) return loadTabs(true);
+          setTabs([]);
+          setActiveTabId("");
+          return null;
         })
         .catch(function (err) {
           setError(parseApiError(err));
@@ -1387,7 +1418,7 @@
         .finally(function () {
           setLoading(false);
         });
-    }, [props.gw, props.connected]);
+    }, [props.gw, props.connected, loadTabs]);
 
     useEffect(function () {
       if (props.open) loadConfig();
@@ -1405,6 +1436,7 @@
       }, 120000)
         .then(function (result) {
           setStatus(result || {});
+          return loadTabs(true);
         })
         .catch(function (err) {
           setError(parseApiError(err));
@@ -1421,6 +1453,8 @@
       props.gw.request("browser.manage", { action: "disconnect" }, 30000)
         .then(function (result) {
           setStatus(result || { connected: false });
+          setTabs([]);
+          setActiveTabId("");
         })
         .catch(function (err) {
           setError(parseApiError(err));
@@ -1442,8 +1476,91 @@
       loadConfig();
     }
 
+    function postBrowser(path, body) {
+      return SDK.fetchJSON(PLUGIN_API + path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {})
+      });
+    }
+
+    function activateTab(targetId) {
+      if (!(config && config.cdp_url)) return;
+      setTabLoading(true);
+      setError("");
+      postBrowser("/browser/tabs/activate", targetId ? { target_id: targetId } : {})
+        .then(function (data) {
+          if (data && data.target_id) setActiveTabId(data.target_id);
+          if (Array.isArray(data && data.tabs)) setTabs(data.tabs);
+        })
+        .catch(function (err) {
+          setError(parseApiError(err));
+        })
+        .finally(function () {
+          setTabLoading(false);
+        });
+    }
+
+    function createTab(event) {
+      event.preventDefault();
+      if (!(config && config.cdp_url)) return;
+      setTabLoading(true);
+      setError("");
+      postBrowser("/browser/tabs", { url: newTabUrl })
+        .then(function (data) {
+          setNewTabUrl("");
+          if (data && data.tab && data.tab.id) setActiveTabId(data.tab.id);
+          if (Array.isArray(data && data.tabs)) setTabs(data.tabs);
+        })
+        .catch(function (err) {
+          setError(parseApiError(err));
+        })
+        .finally(function () {
+          setTabLoading(false);
+        });
+    }
+
+    function closeTab(event, targetId) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!targetId || !(config && config.cdp_url)) return;
+      setTabLoading(true);
+      setError("");
+      postBrowser("/browser/tabs/close", { target_id: targetId })
+        .then(function (data) {
+          const nextTabs = Array.isArray(data && data.tabs) ? data.tabs : [];
+          setTabs(nextTabs);
+          setActiveTabId(function (current) {
+            if (current !== targetId && nextTabs.some(function (tab) { return tab.id === current; })) return current;
+            return nextTabs.length ? nextTabs[0].id : "";
+          });
+        })
+        .catch(function (err) {
+          setError(parseApiError(err));
+        })
+        .finally(function () {
+          setTabLoading(false);
+        });
+    }
+
+    function tabTitle(tab) {
+      return (tab && (tab.title || tab.url)) || "New tab";
+    }
+
+    function shortTabUrl(value) {
+      const url = String(value || "");
+      if (!url) return "about:blank";
+      try {
+        const parsed = new URL(url);
+        return parsed.host || parsed.href;
+      } catch (_e) {
+        return url.replace(/^https?:\/\//, "").slice(0, 96);
+      }
+    }
+
     const novncUrl = config && config.novnc_url;
     const browserConnected = !!(status && status.connected);
+    const tabsConfigured = !!(config && config.cdp_url);
 
     return h("aside", { className: "ncg-browser-drawer", "aria-label": "Browser" },
       h("div", { className: "ncg-file-head" },
@@ -1471,8 +1588,60 @@
           className: "ncg-plain-btn",
           disabled: loading || !props.connected,
           onClick: disconnectBrowser
-        }, "Disconnect")
+        }, "Disconnect"),
+        h("button", {
+          type: "button",
+          className: "ncg-plain-btn",
+          disabled: loading || tabLoading || !tabsConfigured,
+          onClick: function () { activateTab(activeTabId); }
+        }, "Focus")
       ),
+      tabsConfigured ? h("div", { className: "ncg-browser-tabs" },
+        h("form", { className: "ncg-browser-tab-form", onSubmit: createTab },
+          h("input", {
+            className: "ncg-browser-tab-input",
+            value: newTabUrl,
+            placeholder: "URL or search",
+            disabled: tabLoading,
+            onChange: function (event) { setNewTabUrl(event.target.value); }
+          }),
+          h("button", {
+            type: "submit",
+            className: "ncg-plain-btn",
+            disabled: tabLoading
+          }, "New")
+        ),
+        h("div", { className: "ncg-browser-tab-list" },
+          tabLoading && !tabs.length
+            ? h("div", { className: "ncg-browser-tab-empty" }, "Loading tabs...")
+            : tabs.length
+              ? tabs.map(function (tab) {
+                return h("div", {
+                  key: tab.id,
+                  className: cx("ncg-browser-tab", activeTabId === tab.id && "ncg-browser-tab-active")
+                },
+                  h("button", {
+                    type: "button",
+                    className: "ncg-browser-tab-main",
+                    title: tab.url || tab.title || "Browser tab",
+                    disabled: tabLoading,
+                    onClick: function () { activateTab(tab.id); }
+                  },
+                    h("span", { className: "ncg-browser-tab-title" }, tabTitle(tab)),
+                    h("span", { className: "ncg-browser-tab-url" }, shortTabUrl(tab.url))
+                  ),
+                  h("button", {
+                    type: "button",
+                    className: "ncg-browser-tab-close",
+                    title: "Close tab",
+                    disabled: tabLoading,
+                    onClick: function (event) { closeTab(event, tab.id); }
+                  }, "x")
+                );
+              })
+              : h("div", { className: "ncg-browser-tab-empty" }, "No tabs.")
+        )
+      ) : null,
       error ? h("div", { className: "ncg-file-error" }, error) : null,
       !novncUrl
         ? h("div", { className: "ncg-browser-empty" }, loading ? "Loading..." : "No browser view configured.")
