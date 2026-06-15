@@ -172,6 +172,21 @@ def _relative_path(path: Path, workspace: Path) -> str:
         return path.relative_to(workspace).as_posix()
 
 
+_REF_NEEDS_QUOTING_RE = re.compile(r"""[\s()\[\]{}<>"'`]""")
+
+
+def _format_ref_value(value: str) -> str:
+    if not value or not _REF_NEEDS_QUOTING_RE.search(value):
+        return value
+    if "`" not in value:
+        return f"`{value}`"
+    if '"' not in value:
+        return f'"{value}"'
+    if "'" not in value:
+        return f"'{value}'"
+    return value
+
+
 def _modified_at(stat_result: os.stat_result | None) -> str | None:
     if stat_result is None:
         return None
@@ -243,9 +258,11 @@ def _unique_upload_path(directory: Path, filename: str) -> Path:
 
 def _upload_item(path: Path, workspace: Path, content_type: str | None) -> dict[str, Any]:
     mime = content_type or mimetypes.guess_type(path.name)[0] or ""
+    rel_path = _relative_path(path, workspace)
     item = _file_item(path, workspace)
     item["mime"] = mime
-    item["kind"] = "image" if mime.startswith("image/") else "file"
+    item["kind"] = "image" if mime.startswith("image/") else "pdf" if mime == "application/pdf" or path.suffix.lower() == ".pdf" else "file"
+    item["ref_text"] = f"@file:{_format_ref_value(rel_path)}"
     return item
 
 

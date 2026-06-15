@@ -822,10 +822,16 @@
   }
 
   function uploadReferenceText(item) {
+    if (item && item.native_text) return item.native_text;
     if (item && item.ref_text) return item.ref_text;
     if (item && item.text) return item.text;
     const kind = item && item.kind === "image" ? "Image" : item && item.kind === "pdf" ? "PDF" : "File";
     return kind + ": " + ((item && item.path) || (item && item.name) || "uploaded file");
+  }
+
+  function isUnknownGatewayMethod(err) {
+    const message = parseApiError(err).toLowerCase();
+    return message.indexOf("unknown method") >= 0 || message.indexOf("-32601") >= 0;
   }
 
   function Composer(props) {
@@ -873,7 +879,7 @@
       const dataUrl = await readFileAsDataUrl(file);
       const result = await props.gw.request("image.attach_bytes", {
         session_id: sessionId,
-        data: dataUrl,
+        content_base64: dataUrl,
         filename: file.name
       }, 120000);
       return {
@@ -890,7 +896,7 @@
       const dataUrl = await readFileAsDataUrl(file);
       const result = await props.gw.request("pdf.attach", {
         session_id: sessionId,
-        data: dataUrl,
+        content_base64: dataUrl,
         filename: file.name
       }, 180000);
       return {
@@ -919,21 +925,31 @@
           throw new Error("Create or resume a conversation before uploading files.");
         }
 
-        const workspaceFiles = [];
-        const attachedItems = [];
-        for (let i = 0; i < selected.length; i += 1) {
+        const items = await uploadWorkspaceFiles(cwd, selected);
+        for (let i = 0; i < selected.length && i < items.length; i += 1) {
           const file = selected[i];
-          if (isImageFile(file)) {
-            attachedItems.push(await attachImageFile(activeSessionId, file));
-          } else if (isPdfFile(file)) {
-            attachedItems.push(await attachPdfFile(activeSessionId, file));
-          } else {
-            workspaceFiles.push(file);
+          try {
+            const nativeItem = isImageFile(file)
+              ? await attachImageFile(activeSessionId, file)
+              : isPdfFile(file)
+                ? await attachPdfFile(activeSessionId, file)
+                : null;
+            if (nativeItem && nativeItem.text) {
+              items[i] = Object.assign({}, items[i], {
+                native_attached: true,
+                native_text: nativeItem.text,
+                native_path: nativeItem.path || nativeItem.full_path || ""
+              });
+            }
+          } catch (err) {
+            if (!isUnknownGatewayMethod(err)) {
+              items[i] = Object.assign({}, items[i], {
+                native_error: parseApiError(err)
+              });
+            }
           }
         }
 
-        const workspaceItems = await uploadWorkspaceFiles(cwd, workspaceFiles);
-        const items = attachedItems.concat(workspaceItems);
         if (items.length) {
           setUploads(function (prev) {
             return prev.concat(items).slice(-8);
@@ -943,7 +959,7 @@
             const prefix = prev.trim() ? prev.replace(/\s*$/, "") + "\n\n" : "";
             return prefix + refs;
           });
-          if (workspaceItems.length && props.onFilesChanged) props.onFilesChanged();
+          if (props.onFilesChanged) props.onFilesChanged();
           setTimeout(function () { textareaRef.current && textareaRef.current.focus(); }, 0);
         }
       } catch (err) {
