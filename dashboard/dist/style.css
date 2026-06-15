@@ -712,8 +712,9 @@
 .ncg-upload-strip {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  padding-top: 8px;
+  align-items: flex-end;
+  gap: 8px;
+  padding-top: 10px;
 }
 
 .ncg-upload-chip {
@@ -729,6 +730,82 @@
   background: color-mix(in srgb, var(--midground-base, #ffffff) 4%, transparent);
   color: var(--ncg-text-soft);
   font-size: 11px;
+}
+
+.ncg-upload-preview {
+  position: relative;
+  width: 92px;
+  height: 92px;
+  overflow: hidden;
+  border: 1px solid var(--ncg-border-subtle);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ncg-bg) 70%, #000000);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
+}
+
+.ncg-upload-preview img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ncg-upload-preview-name {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  overflow: hidden;
+  padding: 16px 7px 6px;
+  background: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.76));
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ncg-upload-remove,
+.ncg-upload-chip-remove {
+  display: grid;
+  place-items: center;
+  border: 0;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.ncg-upload-remove {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  color: #111111;
+  font-size: 16px;
+  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.28);
+}
+
+.ncg-upload-remove:hover {
+  background: #ffffff;
+}
+
+.ncg-upload-chip-remove {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin-right: -4px;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ncg-text-muted);
+  font-size: 13px;
+}
+
+.ncg-upload-chip-remove:hover {
+  background: color-mix(in srgb, var(--midground-base, #ffffff) 10%, transparent);
+  color: var(--ncg-text);
 }
 
 .ncg-upload-chip-icon {

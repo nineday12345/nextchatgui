@@ -829,6 +829,27 @@
     return kind + ": " + ((item && item.path) || (item && item.name) || "uploaded file");
   }
 
+  function uploadPromptReference(item) {
+    if (item && item.native_attached) return "";
+    return uploadReferenceText(item);
+  }
+
+  function createPreviewUrl(file) {
+    try {
+      return URL.createObjectURL(file);
+    } catch (_e) {
+      return "";
+    }
+  }
+
+  function revokePreviewUrl(value) {
+    try {
+      if (value && String(value).indexOf("blob:") === 0) URL.revokeObjectURL(value);
+    } catch (_e) {
+      /* ignore */
+    }
+  }
+
   function isUnknownGatewayMethod(err) {
     const message = parseApiError(err).toLowerCase();
     return message.indexOf("unknown method") >= 0 || message.indexOf("-32601") >= 0;
@@ -851,10 +872,31 @@
 
     const send = function () {
       const text = draft.trim();
-      if (!text || props.disabled || props.running) return;
+      const refs = uploads.map(uploadPromptReference).filter(Boolean);
+      const outgoingText = refs.length ? (text ? text + "\n\n" + refs.join("\n") : refs.join("\n")) : text;
+      if ((!outgoingText && !uploads.some(function (item) { return item && item.native_attached; })) || props.disabled || props.running) return;
       setDraft("");
-      props.onSend(text);
+      const sentUploads = uploads.slice();
+      setUploads([]);
+      sentUploads.forEach(function (item) { revokePreviewUrl(item && item.preview_url); });
+      props.onSend(outgoingText);
     };
+
+    function removeUpload(item) {
+      setUploads(function (prev) {
+        return prev.filter(function (candidate) {
+          const remove = candidate === item || (item && candidate && candidate.upload_id === item.upload_id);
+          if (remove) revokePreviewUrl(candidate && candidate.preview_url);
+          return !remove;
+        });
+      });
+      if (item && item.native_path && props.gw && props.gw.request) {
+        props.gw.request("image.detach", {
+          session_id: item.session_id || props.sessionId,
+          path: item.native_path
+        }, 30000).catch(function () {});
+      }
+    }
 
     async function uploadWorkspaceFiles(cwd, files) {
       if (!files.length) return [];
@@ -948,6 +990,11 @@
         const items = await uploadWorkspaceFiles(cwd, selected);
         for (let i = 0; i < selected.length && i < items.length; i += 1) {
           const file = selected[i];
+          items[i] = Object.assign({}, items[i], {
+            upload_id: nowId("upload"),
+            session_id: activeSessionId,
+            preview_url: isImageFile(file) ? createPreviewUrl(file) : ""
+          });
           try {
             const nativeItem = isImageFile(file)
               ? await attachImageFile(activeSessionId, file, items[i])
@@ -972,12 +1019,12 @@
 
         if (items.length) {
           setUploads(function (prev) {
-            return prev.concat(items).slice(-8);
-          });
-          const refs = items.map(uploadReferenceText).join("\n");
-          setDraft(function (prev) {
-            const prefix = prev.trim() ? prev.replace(/\s*$/, "") + "\n\n" : "";
-            return prefix + refs;
+            const next = prev.concat(items);
+            const keep = next.slice(-8);
+            next.slice(0, Math.max(0, next.length - keep.length)).forEach(function (item) {
+              revokePreviewUrl(item && item.preview_url);
+            });
+            return keep;
           });
           if (props.onFilesChanged) props.onFilesChanged();
           setTimeout(function () { textareaRef.current && textareaRef.current.focus(); }, 0);
@@ -1017,13 +1064,37 @@
         }),
         uploads.length || uploading ? h("div", { className: "ncg-upload-strip" },
           uploads.map(function (item) {
+            if (item.kind === "image" && item.preview_url) {
+              return h("div", {
+                key: item.upload_id || item.path || item.name,
+                className: "ncg-upload-preview",
+                title: (item.full_path || item.path || item.name) + (item.size ? " - " + formatBytes(item.size) : "")
+              },
+                h("img", { src: item.preview_url, alt: item.name || "Uploaded image" }),
+                h("span", { className: "ncg-upload-preview-name" }, item.name || item.path),
+                h("button", {
+                  type: "button",
+                  className: "ncg-upload-remove",
+                  title: "Remove image",
+                  "aria-label": "Remove image",
+                  onClick: function () { removeUpload(item); }
+                }, "x")
+              );
+            }
             return h("span", {
-              key: item.path || item.name,
+              key: item.upload_id || item.path || item.name,
               className: cx("ncg-upload-chip", item.kind === "image" && "ncg-upload-chip-image", item.kind === "pdf" && "ncg-upload-chip-pdf"),
               title: (item.full_path || item.path || item.name) + (item.size ? " - " + formatBytes(item.size) : "")
             },
               h("span", { className: "ncg-upload-chip-icon", "aria-hidden": true }, uploadKindLabel(item)),
-              h("span", { className: "ncg-upload-chip-name" }, item.name || item.path)
+              h("span", { className: "ncg-upload-chip-name" }, item.name || item.path),
+              h("button", {
+                type: "button",
+                className: "ncg-upload-chip-remove",
+                title: "Remove file",
+                "aria-label": "Remove file",
+                onClick: function () { removeUpload(item); }
+              }, "x")
             );
           }),
           uploading ? h("span", { className: "ncg-upload-chip ncg-upload-chip-loading" }, "Uploading...") : null
@@ -1091,7 +1162,7 @@
             h("button", {
               type: "submit",
               className: "ncg-send-btn",
-              disabled: props.disabled || props.running || !draft.trim()
+              disabled: props.disabled || props.running || uploading || (!draft.trim() && !uploads.length)
             }, "↑")
           )
         )
