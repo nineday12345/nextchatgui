@@ -1011,7 +1011,10 @@
 
 .ncg-runtime-meta code {
   overflow: hidden;
-  color: var(--ncg-text-soft);
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--ncg-amber) 70%, #ffffff 30%);
+  color: #211707;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1028,8 +1031,29 @@
 .ncg-tool-top {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  width: 100%;
   gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.ncg-tool-top:not(:disabled) {
+  cursor: pointer;
+}
+
+.ncg-tool-top:disabled {
+  cursor: default;
+}
+
+.ncg-tool-top strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ncg-tool-top span {
@@ -1038,12 +1062,23 @@
   text-transform: uppercase;
 }
 
-.ncg-tool-row p {
+.ncg-tool-caret {
+  flex: 0 0 auto;
+  width: 10px;
+  transform: translateY(-1px);
+  transition: transform 140ms ease-out;
+}
+
+.ncg-tool-caret-open {
+  transform: translateY(-1px) rotate(90deg);
+}
+
+.ncg-tool-details p {
   margin: 7px 0 0;
   color: var(--ncg-text-soft);
 }
 
-.ncg-tool-row code {
+.ncg-tool-details code {
   display: block;
   overflow: hidden;
   margin-top: 7px;

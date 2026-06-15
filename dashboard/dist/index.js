@@ -1363,6 +1363,14 @@
 
   function ToolPanel(props) {
     const tools = props.tools || [];
+    const [expandedTools, setExpandedTools] = useState({});
+    function toggleTool(toolId) {
+      setExpandedTools(function (prev) {
+        const next = Object.assign({}, prev);
+        next[toolId] = !next[toolId];
+        return next;
+      });
+    }
     return h("aside", { className: "ncg-inspector" },
       h("div", { className: "ncg-inspector-section" },
         h("div", { className: "ncg-inspector-title" }, "Runtime"),
@@ -1396,15 +1404,26 @@
         tools.length === 0
           ? h("div", { className: "ncg-empty-tools" }, "No tool calls yet.")
           : tools.map(function (tool) {
+            const expanded = !!expandedTools[tool.id];
+            const hasDetails = !!(tool.context || tool.preview || tool.error || tool.summary);
             return h("div", { key: tool.id, className: cx("ncg-tool-row", "ncg-tool-" + tool.status) },
-              h("div", { className: "ncg-tool-top" },
+              h("button", {
+                type: "button",
+                className: "ncg-tool-top",
+                disabled: !hasDetails,
+                "aria-expanded": expanded,
+                onClick: function () { if (hasDetails) toggleTool(tool.id); }
+              },
+                h("span", { className: cx("ncg-tool-caret", expanded && "ncg-tool-caret-open"), "aria-hidden": true }, hasDetails ? ">" : ""),
                 h("strong", null, tool.name || "tool"),
                 h("span", null, tool.status)
               ),
-              tool.context ? h("p", null, tool.context) : null,
-              tool.preview ? h("code", null, tool.preview) : null,
-              tool.error ? h("p", { className: "ncg-error-text" }, tool.error) : null,
-              tool.summary ? h("p", null, tool.summary) : null
+              expanded ? h("div", { className: "ncg-tool-details" },
+                tool.context ? h("p", null, tool.context) : null,
+                tool.preview ? h("code", null, tool.preview) : null,
+                tool.error ? h("p", { className: "ncg-error-text" }, tool.error) : null,
+                tool.summary ? h("p", null, tool.summary) : null
+              ) : null
             );
           })
       )
