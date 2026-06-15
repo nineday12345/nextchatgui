@@ -1,6 +1,6 @@
 manifest_version: 1
 name: nextchatgui
-version: 0.1.1
+version: 0.1.2
 description: A NEXTagent-inspired conversation GUI for the Hermes dashboard chat route.
 author: nineday
 kind: standalone
@@ -14,4 +14,7 @@ provides_tools:
   - next_browser_fill_form
   - next_browser_select_autocomplete
   - next_browser_evidence
+  - next_browser_shipping_detect
+  - next_browser_shipping_extract_schedules
+  - next_browser_shipping_modal
 provides_hooks: []

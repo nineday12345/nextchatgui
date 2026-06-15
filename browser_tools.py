@@ -469,6 +469,70 @@ EVIDENCE_SCHEMA: dict[str, Any] = {
 }
 
 
+SHIPPING_DETECT_SCHEMA: dict[str, Any] = {
+    "name": "next_browser_shipping_detect",
+    "description": (
+        "Detect whether the current page is an Evergreen/ShipmentLink or OOCL "
+        "sailing schedule page, then summarize forms, hidden fields, detail "
+        "modal triggers, and recommended next browser tools."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "target_id": {"type": "string"},
+            "text_chars": {"type": "integer", "default": 1000, "minimum": 0},
+        },
+        "additionalProperties": False,
+    },
+}
+
+
+SHIPPING_EXTRACT_SCHEMA: dict[str, Any] = {
+    "name": "next_browser_shipping_extract_schedules",
+    "description": (
+        "Carrier-aware extraction for Evergreen/ShipmentLink and OOCL schedule "
+        "result pages. It converts schedule tables/JSP row groups into normalized "
+        "records with ETD/ETA/vessel/voyage/service/cutoff/POL/POD/delivery "
+        "where possible, while preserving raw cells and detail triggers."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "carrier": {"type": "string", "enum": ["auto", "evergreen", "oocl"], "default": "auto"},
+            "target_id": {"type": "string"},
+            "selector": {"type": "string", "description": "Optional CSS selector scoping result extraction."},
+            "max_records": {"type": "integer", "default": 50, "minimum": 1},
+            "include_raw": {"type": "boolean", "default": True},
+            "output_path": {"type": "string", "description": "Optional JSON file path for full extraction."},
+        },
+        "additionalProperties": False,
+    },
+}
+
+
+SHIPPING_MODAL_SCHEMA: dict[str, Any] = {
+    "name": "next_browser_shipping_modal",
+    "description": (
+        "Open and extract a carrier schedule detail modal, especially "
+        "ShipmentLink/Evergreen Details links with ectype='modalbox' and params "
+        "such as seq=21. Returns modal text, tables, and then optionally closes it."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "target_id": {"type": "string"},
+            "selector": {"type": "string", "description": "CSS selector for the detail trigger."},
+            "text": {"type": "string", "description": "Trigger text to match, e.g. Details."},
+            "params": {"type": "string", "description": "Trigger params attribute to match, e.g. seq=21."},
+            "row_index": {"type": "integer", "description": "Nth matching detail trigger, 0-based.", "minimum": 0},
+            "timeout": {"type": "number", "default": 8},
+            "close": {"type": "boolean", "default": True},
+        },
+        "additionalProperties": False,
+    },
+}
+
+
 FILL_FORM_SCHEMA: dict[str, Any] = {
     "name": "next_browser_fill_form",
     "description": (
@@ -807,6 +871,80 @@ def handle_evidence(args: dict, **kw) -> str:
         return tool_result(payload)
     except Exception as exc:
         return tool_error(f"next_browser_evidence failed: {exc}")
+
+
+def handle_shipping_detect(args: dict, **kw) -> str:
+    try:
+        target = _pick_target(args.get("target_id"))
+        text_chars = max(0, min(int(args.get("text_chars") or 1000), 8000))
+        payload = _runtime_eval(
+            _shipping_detect_script(text_chars=text_chars),
+            target_id=target,
+            timeout=15,
+            task_id=kw.get("task_id"),
+        )
+        if not isinstance(payload, dict):
+            payload = {"result": payload}
+        payload["success"] = True
+        payload["target"] = _target_status(target)
+        return tool_result(payload)
+    except Exception as exc:
+        return tool_error(f"next_browser_shipping_detect failed: {exc}")
+
+
+def handle_shipping_extract_schedules(args: dict, **kw) -> str:
+    try:
+        target = _pick_target(args.get("target_id"))
+        max_records = max(1, min(int(args.get("max_records") or 50), 500))
+        carrier = str(args.get("carrier") or "auto").strip().lower()
+        include_raw = bool(args.get("include_raw", True))
+        payload = _runtime_eval(
+            _shipping_extract_script(
+                carrier=carrier,
+                selector=str(args.get("selector") or ""),
+                max_records=max_records,
+                include_raw=include_raw,
+            ),
+            target_id=target,
+            timeout=35,
+            task_id=kw.get("task_id"),
+        )
+        if not isinstance(payload, dict):
+            return tool_error("Shipping schedule extraction returned an unexpected result")
+        payload["success"] = True
+        payload["target"] = _target_status(target)
+        output_path = _safe_output_path(args.get("output_path"))
+        if output_path:
+            output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            payload["saved_path"] = str(output_path)
+        return tool_result(payload)
+    except Exception as exc:
+        return tool_error(f"next_browser_shipping_extract_schedules failed: {exc}")
+
+
+def handle_shipping_modal(args: dict, **kw) -> str:
+    try:
+        target = _pick_target(args.get("target_id"))
+        timeout = max(1.0, min(float(args.get("timeout") or 8), 60.0))
+        payload = _runtime_eval(
+            _shipping_modal_script(
+                selector=str(args.get("selector") or ""),
+                text=str(args.get("text") or ""),
+                params=str(args.get("params") or ""),
+                row_index=args.get("row_index"),
+                timeout=timeout,
+                close=bool(args.get("close", True)),
+            ),
+            target_id=target,
+            timeout=timeout + 5,
+            task_id=kw.get("task_id"),
+        )
+        if not isinstance(payload, dict):
+            payload = {"result": payload}
+        payload["target"] = _target_status(target)
+        return tool_result(payload)
+    except Exception as exc:
+        return tool_error(f"next_browser_shipping_modal failed: {exc}")
 
 
 def _payload_size(payload: Any) -> int:
@@ -1633,4 +1771,391 @@ def _evidence_script(max_tables: int, max_network_entries: int, text_chars: int)
     body_chars: bodyText.length
   }};
 }})()
+"""
+
+
+def _shipping_detect_script(text_chars: int) -> str:
+    return f"""
+(() => {{
+  const textChars = {int(text_chars)};
+  const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+  const lower = (value) => clean(value).toLowerCase();
+  const url = location.href;
+  const host = location.hostname.toLowerCase();
+  const bodyText = document.body ? clean(document.body.innerText || '') : '';
+  const carrier = host.includes('shipmentlink')
+    ? 'evergreen'
+    : (host.includes('oocl') || host.includes('moc.oocl') ? 'oocl' : 'unknown');
+  const pageHints = [];
+  if (/TVS2_InteractiveScheduleRouting/i.test(url)) pageHints.push('shipmentlink_routing_result_or_form');
+  if (/TVS2_InteractiveScheduleRoutingDetail/i.test(url)) pageHints.push('shipmentlink_detail');
+  if (/mobile_ss_search|sailingschedule/i.test(url)) pageHints.push('oocl_sailing_schedule');
+  if (/The schedules from/i.test(bodyText)) pageHints.push('schedule_result_text');
+  if (/Origin City|Destination City|Cargo Nature/i.test(bodyText)) pageHints.push('schedule_search_form');
+  const fieldsOf = (form) => Array.from(form.elements || []).map((field) => {{
+    const tag = field.tagName.toLowerCase();
+    const type = (field.getAttribute('type') || '').toLowerCase();
+    return {{
+      name: field.name || '',
+      id: field.id || '',
+      tag,
+      type,
+      value: tag === 'select'
+        ? Array.from(field.selectedOptions || []).map((opt) => opt.text || opt.value).join(',')
+        : (type === 'checkbox' || type === 'radio' ? (field.checked ? field.value || 'on' : '') : String(field.value || '')),
+      hidden: type === 'hidden' || field.hidden || getComputedStyle(field).display === 'none',
+      placeholder: field.getAttribute('placeholder') || '',
+      title: field.getAttribute('title') || ''
+    }};
+  }}).filter((field) => field.name || field.id || field.value || field.placeholder || field.title);
+  const forms = Array.from(document.forms || []).map((form, index) => {{
+    const fields = fieldsOf(form);
+    return {{
+      index,
+      action: form.action || url,
+      method: String(form.method || 'GET').toUpperCase(),
+      id: form.id || '',
+      name: form.name || '',
+      fields,
+      hidden_fields: fields.filter((field) => field.hidden)
+    }};
+  }});
+  const detailTriggers = Array.from(document.querySelectorAll('[ectype="modalbox"], a[href*="Detail"], span[href*="Detail"], button, a'))
+    .map((node, index) => ({{
+      index,
+      text: clean(node.innerText || node.textContent || node.value || ''),
+      href: node.getAttribute('href') || node.href || '',
+      params: node.getAttribute('params') || '',
+      ectype: node.getAttribute('ectype') || '',
+      selector_hint: node.id ? `#${{CSS.escape(node.id)}}` : ''
+    }}))
+    .filter((row) => row.ectype === 'modalbox' || /detail/i.test(row.text + ' ' + row.href));
+  const recommended_tools = [];
+  recommended_tools.push('next_browser_tabs(action="list")');
+  recommended_tools.push('next_browser_capture_network(action="start") before submitting forms');
+  if (carrier === 'evergreen') {{
+    recommended_tools.push('next_browser_select_autocomplete for ShipmentLink port fields');
+    recommended_tools.push('next_browser_shipping_extract_schedules(carrier="evergreen")');
+    if (detailTriggers.length) recommended_tools.push('next_browser_shipping_modal(params="seq=...") for Details');
+  }} else if (carrier === 'oocl') {{
+    recommended_tools.push('next_browser_select_autocomplete for OOCL Origin/Destination City fields');
+    recommended_tools.push('next_browser_shipping_extract_schedules(carrier="oocl")');
+  }} else {{
+    recommended_tools.push('next_browser_shipping_extract_schedules(carrier="auto")');
+  }}
+  return {{
+    carrier,
+    page_hints: pageHints,
+    url,
+    title: document.title,
+    form_count: forms.length,
+    forms,
+    detail_triggers: detailTriggers.slice(0, 50),
+    recommended_tools,
+    visible_text_preview: bodyText.slice(0, textChars),
+    extracted_at: new Date().toISOString()
+  }};
+}})()
+"""
+
+
+def _shipping_extract_script(carrier: str, selector: str, max_records: int, include_raw: bool) -> str:
+    return f"""
+(() => {{
+  const requestedCarrier = {json.dumps(carrier)};
+  const scopeSelector = {json.dumps(selector)};
+  const maxRecords = {int(max_records)};
+  const includeRaw = {json.dumps(bool(include_raw))};
+  const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+  const norm = (value) => clean(value).toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const host = location.hostname.toLowerCase();
+  const autoCarrier = host.includes('shipmentlink')
+    ? 'evergreen'
+    : (host.includes('oocl') || host.includes('moc.oocl') ? 'oocl' : 'unknown');
+  const carrier = requestedCarrier === 'auto' ? autoCarrier : requestedCarrier;
+  const scopes = scopeSelector ? Array.from(document.querySelectorAll(scopeSelector)) : [document];
+  const unique = (nodes) => Array.from(new Set(nodes.filter(Boolean)));
+  const ownRows = (table) => Array.from(table.rows || table.querySelectorAll('tr')).filter((row) => row.closest('table') === table);
+  const cellText = (cell) => clean(cell.innerText || cell.textContent || '');
+  const detailTrigger = (root) => {{
+    const node = root.querySelector ? root.querySelector('[ectype="modalbox"], a[href*="Detail"], span[href*="Detail"], a, button') : null;
+    if (!node) return null;
+    const text = clean(node.innerText || node.textContent || node.value || '');
+    const href = node.getAttribute('href') || node.href || '';
+    const params = node.getAttribute('params') || '';
+    const ectype = node.getAttribute('ectype') || '';
+    if (ectype !== 'modalbox' && !/detail/i.test(text + ' ' + href)) return null;
+    return {{ text, href, params, ectype }};
+  }};
+  const parseDateLike = (text) => {{
+    const value = clean(text);
+    const m = value.match(/\\b(?:\\d{{1,2}}[-/ ](?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[-/ ]?\\d{{0,4}}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*[-/ ]\\d{{1,2}}[-/ ,]*\\d{{0,4}}|\\d{{4}}[-/]\\d{{1,2}}[-/]\\d{{1,2}}|\\d{{1,2}}[-/]\\d{{1,2}}[-/]\\d{{2,4}})\\b/i);
+    return m ? clean(m[0]) : '';
+  }};
+  const firstMatch = (text, patterns) => {{
+    for (const pattern of patterns) {{
+      const m = text.match(pattern);
+      if (m) return clean(m[1] || m[0]);
+    }}
+    return '';
+  }};
+  const headerKey = (header) => {{
+    const h = norm(header);
+    if (/placeofreceipt|receipt|origin|from/.test(h)) return 'origin';
+    if (/pol|portofloading|loadingport|departureport/.test(h)) return 'pol';
+    if (/pod|portofdischarge|dischargeport/.test(h)) return 'pod';
+    if (/placeofdelivery|delivery|destination|to/.test(h)) return 'destination';
+    if (/etd|departure|depart|sailing|saildate/.test(h)) return 'etd';
+    if (/eta|arrival|arrive/.test(h)) return 'eta';
+    if (/cutoff|closing|cycut|sicut|doccut|vgm/.test(h)) return 'cutoff';
+    if (/vessel|ship/.test(h)) return 'vessel';
+    if (/voyage|voy|vyg/.test(h)) return 'voyage';
+    if (/service|loop|string/.test(h)) return 'service';
+    if (/transit|duration|days/.test(h)) return 'transit_days';
+    if (/cargo|nature|reefer/.test(h)) return 'cargo_nature';
+    return '';
+  }};
+  const normalizeRecord = (raw, source) => {{
+    const cells = raw.cells || [];
+    const rawText = clean(raw.raw_text || cells.join(' | '));
+    const record = {{
+      carrier,
+      source,
+      origin: raw.origin || '',
+      pol: raw.pol || '',
+      pod: raw.pod || '',
+      destination: raw.destination || raw.delivery || '',
+      delivery: raw.delivery || '',
+      etd: raw.etd || '',
+      eta: raw.eta || '',
+      cutoff: raw.cutoff || '',
+      service: raw.service || '',
+      vessel: raw.vessel || '',
+      voyage: raw.voyage || '',
+      transit_days: raw.transit_days || '',
+      cargo_nature: raw.cargo_nature || '',
+      detail_trigger: raw.detail_trigger || null,
+      confidence: 0,
+      notes: []
+    }};
+    if (!record.etd) record.etd = firstMatch(rawText, [/\\bETD\\s*[:：]?\\s*([^|,;]+?)(?=\\s+(ETA|Vessel|Voyage|Service|Cut|$))/i]) || parseDateLike(rawText);
+    if (!record.eta) record.eta = firstMatch(rawText, [/\\bETA\\s*[:：]?\\s*([^|,;]+?)(?=\\s+(ETD|Vessel|Voyage|Service|Cut|$))/i]);
+    if (!record.voyage) record.voyage = firstMatch(rawText, [/\\bVoy(?:age|\\.)?\\s*[:：#]?\\s*([A-Z0-9-]{{2,12}})\\b/i]);
+    if (!record.service) record.service = firstMatch(rawText, [/\\bService\\s*[:：]?\\s*([A-Z0-9 -]{{2,20}})\\b/i]);
+    if (!record.transit_days) record.transit_days = firstMatch(rawText, [/\\b(?:Transit|Duration)\\D{{0,8}}(\\d{{1,3}})\\s*(?:days?|D)?\\b/i]);
+    if (!record.cutoff) record.cutoff = firstMatch(rawText, [/\\b(?:Cut\\s*off|Cutoff|Closing|CY Cut|SI Cut)\\s*[:：]?\\s*([^|;]+?)(?=\\s+(ETD|ETA|Vessel|Voyage|Service|$))/i]);
+    if (!record.vessel) {{
+      const vesselByLabel = firstMatch(rawText, [/\\bVessel\\s*[:：]?\\s*([^|;]+?)(?=\\s+(Voyage|Voy\\.?|ETD|ETA|Service|$))/i]);
+      if (vesselByLabel) record.vessel = vesselByLabel;
+    }}
+    const filled = ['origin','pol','pod','destination','delivery','etd','eta','cutoff','service','vessel','voyage','transit_days']
+      .filter((key) => record[key]);
+    record.confidence = Math.min(1, filled.length / 8);
+    if (!record.etd && !record.eta) record.notes.push('No ETD/ETA parsed; inspect raw cells.');
+    if (!record.vessel && !record.voyage) record.notes.push('No vessel/voyage parsed; inspect raw cells or Details modal.');
+    if (includeRaw) {{
+      record.raw_cells = cells;
+      record.raw_text = rawText;
+      record.raw_headers = raw.headers || [];
+    }}
+    return record;
+  }};
+  const tables = unique(scopes.flatMap((scope) => {{
+    if (scope.tagName && scope.tagName.toLowerCase() === 'table') return [scope];
+    return Array.from(scope.querySelectorAll ? scope.querySelectorAll('table') : []);
+  }}));
+  const records = [];
+  const table_summaries = [];
+  tables.forEach((table, tableIndex) => {{
+    const rows = ownRows(table).map((row, rowIndex) => {{
+      const cells = Array.from(row.children || []).filter((cell) => ['td', 'th'].includes(cell.tagName.toLowerCase())).map(cellText);
+      return {{ node: row, rowIndex, cells }};
+    }}).filter((row) => row.cells.some(Boolean));
+    if (!rows.length) return;
+    const headerIndex = rows.findIndex((row) => row.cells.map(headerKey).filter(Boolean).length >= 2);
+    table_summaries.push({{ table_index: tableIndex, row_count: rows.length, header_index: headerIndex, sample: rows.slice(0, 2).map((row) => row.cells) }});
+    if (headerIndex >= 0) {{
+      const headers = rows[headerIndex].cells;
+      const keys = headers.map(headerKey);
+      rows.slice(headerIndex + 1).forEach((row) => {{
+        const raw = {{ cells: row.cells, headers, detail_trigger: detailTrigger(row.node), raw_text: row.cells.join(' | ') }};
+        keys.forEach((key, index) => {{
+          if (key) raw[key] = row.cells[index] || '';
+        }});
+        const hasScheduleSignal = raw.etd || raw.eta || raw.vessel || raw.voyage || raw.service || raw.detail_trigger || row.cells.join(' ').match(/\\b(ETD|ETA|Vessel|Voy|Service|Cut|\\d{{1,2}}[-/ ](?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec))/i);
+        if (hasScheduleSignal) records.push(normalizeRecord(raw, `table:${{tableIndex}}`));
+      }});
+    }} else {{
+      rows.forEach((row) => {{
+        const rawText = row.cells.join(' | ');
+        const trigger = detailTrigger(row.node);
+        const signal = trigger || rawText.match(/\\b(ETD|ETA|Vessel|Voy|Service|Cut|\\d{{1,2}}[-/ ](?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)|\\d{{4}}[-/]\\d{{1,2}}[-/]\\d{{1,2}})/i);
+        if (!signal) return;
+        records.push(normalizeRecord({{ cells: row.cells, raw_text: rawText, detail_trigger: trigger }}, `table:${{tableIndex}}:row:${{row.rowIndex}}`));
+      }});
+      for (let i = 0; i < rows.length - 1; i += 3) {{
+        const groupRows = rows.slice(i, i + 3);
+        const rawText = groupRows.map((row) => row.cells.join(' | ')).join(' || ');
+        if (!rawText.match(/\\b(ETD|ETA|Vessel|Voy|Service|Cut|\\d{{1,2}}[-/ ](?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)|\\d{{4}}[-/]\\d{{1,2}}[-/]\\d{{1,2}})/i)) continue;
+        records.push(normalizeRecord({{ cells: groupRows.flatMap((row) => row.cells), raw_text: rawText, detail_trigger: detailTrigger(groupRows[0].node) }}, `table:${{tableIndex}}:row_group:${{i}}`));
+      }}
+    }}
+  }});
+  const seen = new Set();
+  const deduped = [];
+  for (const record of records) {{
+    const key = [record.etd, record.eta, record.vessel, record.voyage, record.service, record.raw_text || ''].join('|').slice(0, 400);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(record);
+    if (deduped.length >= maxRecords) break;
+  }}
+  const detail_triggers = Array.from(document.querySelectorAll('[ectype="modalbox"], a[href*="Detail"], span[href*="Detail"]'))
+    .map((node, index) => ({{
+      index,
+      text: clean(node.innerText || node.textContent || ''),
+      href: node.getAttribute('href') || node.href || '',
+      params: node.getAttribute('params') || '',
+      ectype: node.getAttribute('ectype') || ''
+    }}))
+    .filter((row) => row.ectype === 'modalbox' || /detail/i.test(row.text + ' ' + row.href))
+    .slice(0, 100);
+  return {{
+    carrier,
+    url: location.href,
+    title: document.title,
+    extracted_at: new Date().toISOString(),
+    record_count: deduped.length,
+    records: deduped,
+    table_summaries,
+    detail_triggers,
+    notes: deduped.length ? [] : ['No schedule records parsed. Try selector, next_browser_extract_tables(include_layout_tables=true), or next_browser_evidence.']
+  }};
+}})()
+"""
+
+
+def _shipping_modal_script(
+    selector: str,
+    text: str,
+    params: str,
+    row_index: Any,
+    timeout: float,
+    close: bool,
+) -> str:
+    return f"""
+new Promise((resolve) => {{
+  const selector = {json.dumps(selector)};
+  const wantedText = {json.dumps(text, ensure_ascii=False)};
+  const wantedParams = {json.dumps(params)};
+  const rowIndex = {json.dumps(row_index)};
+  const timeoutMs = {int(timeout * 1000)};
+  const shouldClose = {json.dumps(bool(close))};
+  const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+  const norm = (value) => clean(value).toLowerCase();
+  const visible = (el) => {{
+    if (!el) return false;
+    const style = getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+  }};
+  const rowsFromTable = (table) => Array.from(table.rows || []).map((row) =>
+    Array.from(row.children || []).filter((cell) => ['td', 'th'].includes(cell.tagName.toLowerCase())).map((cell) => clean(cell.innerText || cell.textContent))
+  ).filter((row) => row.some(Boolean));
+  const candidates = selector
+    ? Array.from(document.querySelectorAll(selector))
+    : Array.from(document.querySelectorAll('[ectype="modalbox"], a[href*="Detail"], span[href*="Detail"], button, a'));
+  const matches = candidates.filter((node) => {{
+    const nodeText = clean(node.innerText || node.textContent || node.value || '');
+    const nodeParams = node.getAttribute('params') || '';
+    const href = node.getAttribute('href') || node.href || '';
+    const isDetail = node.getAttribute('ectype') === 'modalbox' || /detail/i.test(nodeText + ' ' + href);
+    if (!selector && !isDetail) return false;
+    if (wantedParams && nodeParams !== wantedParams && !nodeParams.includes(wantedParams)) return false;
+    if (wantedText && !norm(nodeText).includes(norm(wantedText))) return false;
+    return true;
+  }});
+  const chosenIndex = rowIndex == null || rowIndex === '' ? 0 : Number(rowIndex);
+  const trigger = matches[chosenIndex];
+  if (!trigger) {{
+    resolve({{
+      success: false,
+      error: 'detail trigger not found',
+      selector,
+      text: wantedText,
+      params: wantedParams,
+      available: matches.slice(0, 30).map((node, index) => ({{
+        index,
+        text: clean(node.innerText || node.textContent || node.value || ''),
+        href: node.getAttribute('href') || node.href || '',
+        params: node.getAttribute('params') || ''
+      }}))
+    }});
+    return;
+  }}
+  const beforeText = document.body ? clean(document.body.innerText || '') : '';
+  trigger.scrollIntoView({{ block: 'center', inline: 'center' }});
+  trigger.click();
+  const started = Date.now();
+  const findModal = () => {{
+    const nodes = Array.from(document.querySelectorAll(
+      '[role="dialog"], .modal, .modalbox, .ui-dialog, .fancybox-wrap, .fancybox-container, .popup, .pop, div'
+    )).filter(visible);
+    const scored = nodes.map((node) => {{
+      const text = clean(node.innerText || node.textContent || '');
+      let score = 0;
+      if (node.getAttribute('role') === 'dialog') score += 40;
+      if (/modal|dialog|fancybox|popup/i.test(node.className || '')) score += 30;
+      if (text.length > 20 && beforeText.indexOf(text.slice(0, 80)) === -1) score += 25;
+      if (node.querySelector('table')) score += 20;
+      return {{ node, text, score }};
+    }}).filter((row) => row.score > 20 && row.text);
+    scored.sort((a, b) => b.score - a.score);
+    return scored[0] || null;
+  }};
+  const finish = () => {{
+    const modal = findModal();
+    if (!modal) {{
+      if (Date.now() - started >= timeoutMs) {{
+        resolve({{
+          success: false,
+          error: 'modal did not appear before timeout',
+          trigger: {{
+            text: clean(trigger.innerText || trigger.textContent || trigger.value || ''),
+            href: trigger.getAttribute('href') || trigger.href || '',
+            params: trigger.getAttribute('params') || ''
+          }}
+        }});
+      }} else {{
+        setTimeout(finish, 250);
+      }}
+      return;
+    }}
+    const tables = Array.from(modal.node.querySelectorAll('table')).map((table, index) => ({{
+      index,
+      rows: rowsFromTable(table)
+    }})).filter((table) => table.rows.length);
+    const payload = {{
+      success: true,
+      trigger: {{
+        text: clean(trigger.innerText || trigger.textContent || trigger.value || ''),
+        href: trigger.getAttribute('href') || trigger.href || '',
+        params: trigger.getAttribute('params') || '',
+        ectype: trigger.getAttribute('ectype') || ''
+      }},
+      modal_text: modal.text.slice(0, 12000),
+      tables,
+      url: location.href,
+      title: document.title
+    }};
+    if (shouldClose) {{
+      const closeButton = modal.node.querySelector('[aria-label="Close"], .close, .ui-dialog-titlebar-close, .fancybox-close-small, button');
+      if (closeButton) closeButton.click();
+      else document.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Escape', bubbles: true }}));
+      payload.closed = true;
+    }}
+    resolve(payload);
+  }};
+  setTimeout(finish, 250);
+}})
 """

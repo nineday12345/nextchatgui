@@ -9,6 +9,9 @@ from .browser_tools import (
     EXTRACT_TABLES_SCHEMA,
     FILL_FORM_SCHEMA,
     NETWORK_SCHEMA,
+    SHIPPING_DETECT_SCHEMA,
+    SHIPPING_EXTRACT_SCHEMA,
+    SHIPPING_MODAL_SCHEMA,
     TABS_SCHEMA,
     WAIT_SELECTOR_SCHEMA,
     WAIT_TEXT_SCHEMA,
@@ -19,6 +22,9 @@ from .browser_tools import (
     handle_extract_tables,
     handle_fill_form,
     handle_select_autocomplete,
+    handle_shipping_detect,
+    handle_shipping_extract_schedules,
+    handle_shipping_modal,
     handle_tabs,
     handle_wait_for_selector,
     handle_wait_for_text,
@@ -35,6 +41,9 @@ _TOOLS = (
     ("next_browser_fill_form", FILL_FORM_SCHEMA, handle_fill_form),
     ("next_browser_select_autocomplete", AUTOCOMPLETE_SCHEMA, handle_select_autocomplete),
     ("next_browser_evidence", EVIDENCE_SCHEMA, handle_evidence),
+    ("next_browser_shipping_detect", SHIPPING_DETECT_SCHEMA, handle_shipping_detect),
+    ("next_browser_shipping_extract_schedules", SHIPPING_EXTRACT_SCHEMA, handle_shipping_extract_schedules),
+    ("next_browser_shipping_modal", SHIPPING_MODAL_SCHEMA, handle_shipping_modal),
 )
 
 

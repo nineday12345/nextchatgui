@@ -33,6 +33,16 @@ Tools:
 - `next_browser_evidence`: collect a compact evidence package containing the
   current target, forms, hidden values, recent network/form logs, table
   summaries, visible text preview, and optionally a screenshot.
+- `next_browser_shipping_detect`: detect Evergreen/ShipmentLink or OOCL schedule
+  pages and summarize forms, hidden fields, detail triggers, and recommended
+  next tools.
+- `next_browser_shipping_extract_schedules`: carrier-aware schedule extractor
+  for Evergreen/ShipmentLink and OOCL result pages. It normalizes ETD, ETA,
+  vessel, voyage, service, cutoff, POL/POD, destination/delivery, transit days,
+  and keeps raw cells/detail triggers for audit.
+- `next_browser_shipping_modal`: click and extract a schedule detail modal,
+  especially ShipmentLink `ectype="modalbox"` / `params="seq=..."` Details
+  links.
 
 The network recorder is page-injected JavaScript, so it captures requests made
 after `next_browser_capture_network(action="start")`. It also records
@@ -60,12 +70,28 @@ inspect `hidden_fields` or call `next_browser_evidence`.
 For old JSP/business pages such as schedules:
 
 1. Call `next_browser_tabs(action="list")` and keep the returned `target_id`.
-2. Call `next_browser_capture_network(action="start", target_id=...)`.
-3. Fill normal fields with `next_browser_fill_form`; use
+2. Call `next_browser_shipping_detect(target_id=...)` to confirm whether the
+   page is Evergreen/ShipmentLink or OOCL.
+3. Call `next_browser_capture_network(action="start", target_id=...)`.
+4. Fill normal fields with `next_browser_fill_form`; use
    `next_browser_select_autocomplete` for port/location widgets.
-4. Submit the form.
-5. If text waits fail, `next_browser_wait_for_text` returns `body_preview` so
+5. Submit the form.
+6. If text waits fail, `next_browser_wait_for_text` returns `body_preview` so
    the model can adjust the expected phrase.
-6. Use `next_browser_extract_tables(selector=..., max_chars=...)` for data rows,
-   or `next_browser_evidence(output_path=...)` to save a reproducible query
-   package.
+7. Use `next_browser_shipping_extract_schedules(carrier="evergreen"|"oocl")`
+   first. Fall back to `next_browser_extract_tables(selector=..., max_chars=...)`
+   if the page has a new layout.
+8. For Evergreen/ShipmentLink Details links, call
+   `next_browser_shipping_modal(params="seq=...")`.
+9. Call `next_browser_evidence(output_path=...)` to save a reproducible query
+   package with form POST fields, hidden values, network/form logs, and table
+   summaries.
+
+For the current exam constraint, the intended carrier presets are:
+
+- Evergreen: ShipmentLink JSP pages such as
+  `TVS2_InteractiveScheduleRouting.jsp`; use autocomplete for ports and
+  `next_browser_shipping_modal` for `Details`.
+- OOCL: OOCL Sailing Schedule pages, including `pbservice.moc.oocl.com` mobile
+  schedule forms; capture form POST data and extract schedules with
+  `carrier="oocl"`.
